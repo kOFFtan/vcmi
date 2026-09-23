@@ -125,6 +125,8 @@ public:
 	bool updateStateAndExecutePriorityPass(Goals::TGoalVec& tempResults, int passIndex);
 	bool isActive(const CGHeroInstance * hero) const { return activeHero == hero; }
 	bool isHeroLocked(const CGHeroInstance * hero) const;
+	bool isAutoHeroesPhase() const;
+	bool isAutoHeroEnabled(const CGHeroInstance * hero) const;
 	HeroPtr getActiveHero() { return HeroPtr(activeHero, cc.get()); }
 	HeroLockedReason getHeroLockedReason(const CGHeroInstance * hero) const;
 	int3 getTargetTile() const { return targetTile; }
@@ -148,6 +150,7 @@ public:
 	HeroMap<HeroRole> getHeroesForPathfinding() const;
 
 private:
+	bool isTaskAllowedForAutoHeroes(const Goals::TTask & task) const;
 	void resetState();
 	void updateState();
 	void reserveRequiredTownDefenders();

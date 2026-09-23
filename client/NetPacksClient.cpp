@@ -47,6 +47,7 @@
 #include "../lib/battle/BattleInfo.h"
 #include "../lib/GameConstants.h"
 #include "../lib/CPlayerState.h"
+#include "../lib/autoheroes/AutoHeroConfig.h"
 
 // TODO: as Tow suggested these template should all be part of CClient
 // This will require rework spectator interface properly though
@@ -990,6 +991,11 @@ void ApplyClientNetPackVisitor::visitPlayerBlocked(PlayerBlocked & pack)
 void ApplyClientNetPackVisitor::visitPlayerStartsTurn(PlayerStartsTurn & pack)
 {
 	logNetwork->debug("Server gives turn to %s", pack.player.toString());
+
+	// AutoHeroes owns only the remainder of one human turn. Restore the human
+	// interface before dispatching the next real turn to that player.
+	if(AutoHeroes::isPhaseActive() && AutoHeroes::phasePlayer() == pack.player)
+		cl.finishAutoHeroesPhase(pack.player);
 
 	callAllInterfaces(cl, &IGameEventsReceiver::playerStartsTurn, pack.player);
 	callOnlyThatInterface(cl, pack.player, &CGameInterface::yourTurn, pack.queryID);

@@ -87,6 +87,9 @@ class ClientCommandManager //take mantis #2292 issue about account if thinking a
 	// Toggle AI hero role overlay.
 	void handleWhoIsTheBossCommand(std::istringstream & singleWordBuffer);
 
+	// Configure AutoHeroes for currently selected hero.
+	void handleAutoHeroCommand(std::istringstream & singleWordBuffer);
+
 	// generate all assets
 	void handleGenerateAssets();
 

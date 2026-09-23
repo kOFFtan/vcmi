@@ -32,10 +32,12 @@
 #include "../lib/callback/IGameInfoCallback.h"
 #include "../lib/filesystem/Filesystem.h"
 #include "../lib/gameState/CGameState.h"
+#include "../lib/mapObjects/CGHeroInstance.h"
 #include "../lib/CPlayerState.h"
 #include "../lib/CThreadHelper.h"
 #include "../lib/VCMIDirs.h"
 #include "../lib/UnlockGuard.h"
+#include "../lib/autoheroes/AutoHeroConfig.h"
 #include "../lib/mapObjects/army/CArmedInstance.h"
 #include "../lib/mapping/CMapService.h"
 #include "../lib/pathfinder/CGPathNode.h"
@@ -101,6 +103,11 @@ const CClient::GameCb * CClient::game() const
 
 void CClient::newGame(std::shared_ptr<CGameState> initializedGameState)
 {
+	// AutoHeroes runtime storage is process-local. Start every game from a clean
+	// slate; saved settings (when loading) are restored by PlayerLocalState.
+	AutoHeroes::clearAllHeroConfigs();
+	AutoHeroes::clearRuntimePhase();
+
 	GAME->server().th->update();
 	assert(initializedGameState);
 	gamestate = initializedGameState;
@@ -114,6 +121,11 @@ void CClient::newGame(std::shared_ptr<CGameState> initializedGameState)
 
 void CClient::loadGame(std::shared_ptr<CGameState> initializedGameState)
 {
+	// Do not leak per-hero automation from the previous session into the loaded map.
+	// PlayerLocalState restores the saved values during interface initialization.
+	AutoHeroes::clearAllHeroConfigs();
+	AutoHeroes::clearRuntimePhase();
+
 	logNetwork->info("Loading procedure started!");
 
 	logNetwork->info("Game state was transferred over network, loading.");
@@ -405,6 +417,47 @@ void CClient::giveTurnLocally(PlayerColor color)
 
 	ApplyClientNetPackVisitor visitor(*this, gameState());
 	yt.visit(visitor);
+}
+
+bool CClient::startAutoHeroesPhase(PlayerColor color)
+{
+	if(AutoHeroes::isPhaseActive())
+		return false;
+
+	bool hasEligibleHero = false;
+	for(const auto * hero : gameState().players.at(color).getHeroes())
+	{
+		if(AutoHeroes::isHeroEnabled(hero->id) && !hero->isGarrisoned() && hero->movementPointsRemaining() > 100)
+		{
+			hasEligibleHero = true;
+			break;
+		}
+	}
+
+	if(!hasEligibleHero)
+		return false;
+
+	const auto & playerSettings = *gameInfo().getPlayerSettings(color);
+	const std::string aiName = aiNameForPlayer(playerSettings, false, false);
+	logGlobal->info("AutoHeroes phase for player %s will be handled by %s", color.toString(), aiName);
+
+	AutoHeroes::setPhasePlayer(color);
+	AutoHeroes::setPhaseActive(true);
+
+	removeGUI();
+	installNewPlayerInterface(AIFactory::createAdventureAI(aiName), color);
+	giveTurnLocally(color);
+	return true;
+}
+
+void CClient::finishAutoHeroesPhase(PlayerColor color)
+{
+	if(!AutoHeroes::isPhaseActive() || AutoHeroes::phasePlayer() != color)
+		return;
+
+	logGlobal->info("AutoHeroes phase for player %s finished; restoring human interface", color.toString());
+	AutoHeroes::clearRuntimePhase();
+	installNewPlayerInterface(std::make_shared<CPlayerInterface>(color), color);
 }
 
 void CClient::toggleAiSolo(EAiSoloMode mode, bool ownVision)

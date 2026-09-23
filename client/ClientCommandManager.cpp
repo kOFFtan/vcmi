@@ -49,6 +49,7 @@
 #include "../lib/texts/TextOperations.h"
 #include "../lib/ObstacleHandler.h"
 #include "../lib/logging/VisualLogger.h"
+#include "../lib/autoheroes/AutoHeroConfig.h"
 
 void ClientCommandManager::handleQuitCommand()
 {
@@ -546,6 +547,213 @@ void ClientCommandManager::handleWhoIsTheBossCommand(std::istringstream & single
 	ENGINE->windows().totalRedraw();
 }
 
+void ClientCommandManager::handleAutoHeroCommand(std::istringstream & singleWordBuffer)
+{
+	if(!GAME->interface() || !GAME->interface()->localState)
+	{
+		printCommandMessage("AutoHeroes: no active human interface", ELogLevel::WARN);
+		return;
+	}
+
+	const CGHeroInstance * hero = GAME->interface()->localState->getCurrentHero();
+	if(!hero)
+	{
+		printCommandMessage("AutoHeroes: select a hero first", ELogLevel::WARN);
+		return;
+	}
+
+	auto config = AutoHeroes::readHeroConfig(hero->id);
+	auto persistConfig = [&]()
+	{
+		AutoHeroes::writeHeroConfig(hero->id, config);
+		GAME->interface()->localState->saveState();
+	};
+
+	std::string subcommand;
+	singleWordBuffer >> subcommand;
+	boost::to_lower(subcommand);
+
+	auto printStatus = [&]()
+	{
+		std::vector<std::string> actions;
+		for(const auto action : config.priority)
+			if(config.actions.contains(action))
+				actions.push_back(AutoHeroes::actionToString(action));
+
+		std::vector<std::string> priority;
+		for(const auto action : config.priority)
+			priority.push_back(AutoHeroes::actionToString(action));
+
+		std::ostringstream out;
+		out << "AutoHeroes " << hero->getNameTextID()
+			<< ": " << (config.enabled ? "ON" : "OFF")
+			<< "; actions=" << boost::algorithm::join(actions, ",")
+			<< "; priority=" << boost::algorithm::join(priority, ">")
+			<< "; recruit=" << (config.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY ? "own" : "any")
+			<< "; foreignSlots=" << config.maxForeignFactionSlots
+			<< "; goldReserve=" << config.goldReserve
+			<< "; radius=" << config.movementRadius;
+		printCommandMessage(out.str(), ELogLevel::INFO);
+	};
+
+	if(subcommand.empty() || subcommand == "status")
+	{
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "on")
+	{
+		config.enabled = true;
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "off")
+	{
+		config.enabled = false;
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "actions")
+	{
+		config.actions.clear();
+		std::string action;
+		while(singleWordBuffer >> action)
+		{
+			boost::to_lower(action);
+			if(action == "collect") config.actions.insert(AutoHeroes::Action::COLLECT_RESOURCES);
+			else if(action == "level") config.actions.insert(AutoHeroes::Action::LEVEL_UP);
+			else if(action == "recruit") config.actions.insert(AutoHeroes::Action::RECRUIT_CREATURES);
+			else if(action == "explore") config.actions.insert(AutoHeroes::Action::EXPLORE);
+			else if(action == "capture") config.actions.insert(AutoHeroes::Action::CAPTURE_OBJECTS);
+			else if(action == "fight") config.actions.insert(AutoHeroes::Action::FIGHT_NEUTRALS);
+		}
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "priority")
+	{
+		std::vector<AutoHeroes::Action> newPriority;
+		std::string action;
+		while(singleWordBuffer >> action)
+		{
+			boost::to_lower(action);
+			std::optional<AutoHeroes::Action> parsed;
+			if(action == "collect") parsed = AutoHeroes::Action::COLLECT_RESOURCES;
+			else if(action == "level") parsed = AutoHeroes::Action::LEVEL_UP;
+			else if(action == "recruit") parsed = AutoHeroes::Action::RECRUIT_CREATURES;
+			else if(action == "explore") parsed = AutoHeroes::Action::EXPLORE;
+			else if(action == "capture") parsed = AutoHeroes::Action::CAPTURE_OBJECTS;
+			else if(action == "fight") parsed = AutoHeroes::Action::FIGHT_NEUTRALS;
+
+			if(parsed && std::find(newPriority.begin(), newPriority.end(), *parsed) == newPriority.end())
+				newPriority.push_back(*parsed);
+		}
+
+		if(newPriority.empty())
+		{
+			printCommandMessage("Usage: /autohero priority level recruit collect explore capture fight", ELogLevel::WARN);
+			return;
+		}
+
+		for(const auto existing : config.priority)
+			if(std::find(newPriority.begin(), newPriority.end(), existing) == newPriority.end())
+				newPriority.push_back(existing);
+
+		config.priority = std::move(newPriority);
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "radius")
+	{
+		int radius = 0;
+		if(!(singleWordBuffer >> radius))
+		{
+			printCommandMessage("Usage: /autohero radius <tiles>; 0 = unlimited", ELogLevel::WARN);
+			return;
+		}
+		config.movementRadius = std::max(0, radius);
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "recruit")
+	{
+		std::string mode;
+		singleWordBuffer >> mode;
+		boost::to_lower(mode);
+		if(mode == "own")
+		{
+			config.recruitmentScope = AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY;
+			config.maxForeignFactionSlots = 0;
+		}
+		else if(mode == "any")
+		{
+			config.recruitmentScope = AutoHeroes::RecruitmentScope::UNRESTRICTED;
+			int slots = -1;
+			if(singleWordBuffer >> slots)
+				config.maxForeignFactionSlots = std::clamp(slots, -1, 7);
+			else
+				config.maxForeignFactionSlots = -1;
+		}
+		else
+		{
+			printCommandMessage("Usage: /autohero recruit own | any [0..7]", ELogLevel::WARN);
+			return;
+		}
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "gold")
+	{
+		int reserve = 0;
+		if(!(singleWordBuffer >> reserve))
+		{
+			printCommandMessage("Usage: /autohero gold <amount>", ELogLevel::WARN);
+			return;
+		}
+		config.goldReserve = std::max(0, reserve);
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	if(subcommand == "combat")
+	{
+		std::string mode;
+		singleWordBuffer >> mode;
+		boost::to_lower(mode);
+		if(mode == "off") config.combatPolicy = AutoHeroes::CombatPolicy::DISABLED;
+		else if(mode == "safe") config.combatPolicy = AutoHeroes::CombatPolicy::SAFE_ONLY;
+		else if(mode == "losses") config.combatPolicy = AutoHeroes::CombatPolicy::ALLOW_SMALL_LOSSES;
+		else
+		{
+			printCommandMessage("Usage: /autohero combat off | safe | losses", ELogLevel::WARN);
+			return;
+		}
+		persistConfig();
+		printStatus();
+		return;
+	}
+
+	printCommandMessage(
+		"AutoHeroes commands: /autohero on|off|status; /autohero actions collect level recruit explore capture fight; "
+		"/autohero priority <ordered actions>; /autohero recruit own|any [0..7]; /autohero gold <amount>; "
+		"/autohero radius <tiles>; /autohero combat off|safe|losses",
+		ELogLevel::INFO);
+}
+
 void ClientCommandManager::handleGenerateAssets()
 {
 	ENGINE->renderHandler().exportGeneratedAssets();
@@ -676,6 +884,9 @@ void ClientCommandManager::processCommand(const std::string & message, bool call
 
 	else if(boost::iequals(commandName, "whoistheboss"))
 		handleWhoIsTheBossCommand(singleWordBuffer);
+
+	else if(boost::iequals(commandName, "autohero"))
+		handleAutoHeroCommand(singleWordBuffer);
 
 	else if(message=="generate assets")
 		handleGenerateAssets();

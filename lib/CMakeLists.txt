@@ -335,6 +335,7 @@ set(lib_MAIN_SRCS
 	TerrainHandler.cpp
 	TurnTimerInfo.cpp
 	GameLibrary.cpp
+	autoheroes/AutoHeroConfig.cpp
 )
 
 if (NOT ENABLE_MINIMAL_LIB)
@@ -406,6 +407,7 @@ set(lib_MAIN_HEADERS
 
 	../include/vstd/ContainerUtils.h
 	../include/vstd/RNG.h
+	autoheroes/AutoHeroConfig.h
 
 	../include/vcmi/events/AdventureEvents.h
 	../include/vcmi/events/ApplyDamage.h

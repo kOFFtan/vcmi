@@ -36,6 +36,7 @@
 #include "../../lib/CPlayerState.h"
 
 #include "AIGateway.h"
+#include "../../lib/autoheroes/AutoHeroConfig.h"
 #include "Goals/Goals.h"
 
 namespace NK2AI
@@ -947,6 +948,13 @@ void AIGateway::pickBestCreatures(const CArmedInstance * destinationArmy, const 
 void AIGateway::recruitCreatures(const CGDwelling * d, const CArmedInstance * recruiter)
 {
 	//now used only for visited dwellings / towns, not BuyArmy goal
+	const auto autoHero = nullkiller->getActiveHero();
+	const bool selectivePhase = nullkiller->isAutoHeroesPhase() && autoHero.isVerified();
+	const auto autoConfig = selectivePhase ? AutoHeroes::readHeroConfig(autoHero->id) : AutoHeroes::HeroConfig();
+
+	if(selectivePhase && !autoConfig.allows(AutoHeroes::Action::RECRUIT_CREATURES))
+		return;
+
 	for(int i = 0; i < d->creatures.size(); i++)
 	{
 		if(!d->creatures[i].second.size())
@@ -954,6 +962,25 @@ void AIGateway::recruitCreatures(const CGDwelling * d, const CArmedInstance * re
 
 		int count = d->creatures[i].first;
 		CreatureID creID = d->creatures[i].second.back();
+
+		if(selectivePhase && creID.toCreature()->getFactionID() != autoHero->getFactionID())
+		{
+			if(autoConfig.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY)
+				continue;
+
+			if(autoConfig.maxForeignFactionSlots >= 0 && !recruiter->getSlotFor(creID).validSlot())
+			{
+				int foreignSlots = 0;
+				for(const auto & stack : recruiter->Slots())
+				{
+					if(stack.second->getType() && stack.second->getCreature()->getFactionID() != autoHero->getFactionID())
+						++foreignSlots;
+				}
+
+				if(foreignSlots >= autoConfig.maxForeignFactionSlots)
+					continue;
+			}
+		}
 
 		if(!recruiter->getSlotFor(creID).validSlot())
 		{
@@ -977,7 +1004,7 @@ void AIGateway::recruitCreatures(const CGDwelling * d, const CArmedInstance * re
 			}
 		}
 
-		vstd::amin(count, cc->getResourceAmount() / creID.toCreature()->getFullRecruitCost());
+		vstd::amin(count, nullkiller->getFreeResources() / creID.toCreature()->getFullRecruitCost());
 		if(count > 0)
 			cc->recruitCreatures(d, recruiter, creID, count, i);
 	}

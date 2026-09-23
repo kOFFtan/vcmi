@@ -19,6 +19,7 @@
 #include "../widgets/RadialMenu.h"
 #include "../windows/InfoWindows.h"
 #include "../windows/CCastleInterface.h"
+#include "../windows/CAutoHeroWindow.h"
 #include "../CPlayerInterface.h"
 #include "../PlayerLocalState.h"
 #include "../GameEngine.h"
@@ -281,12 +282,9 @@ void CHeroList::CHeroItem::gesture(bool on, const Point & initialPosition, const
 
 	auto & heroes = GAME->interface()->localState->getWanderingHeroes();
 
-	if(heroes.size() < 2)
-		return;
-
 	size_t heroPos = vstd::find_pos(heroes, hero);
-	const CGHeroInstance * heroUpper = (heroPos < 1) ? nullptr : heroes.at(heroPos - 1);
-	const CGHeroInstance * heroLower = (heroPos > heroes.size() - 2) ? nullptr : heroes.at(heroPos + 1);
+	const CGHeroInstance * heroUpper = heroPos > 0 ? heroes.at(heroPos - 1) : nullptr;
+	const CGHeroInstance * heroLower = heroPos + 1 < heroes.size() ? heroes.at(heroPos + 1) : nullptr;
 
 	std::vector<RadialMenuConfig> menuElements = {
 		{ RadialMenuConfig::ITEM_ALT_NN, heroUpper != nullptr, "altUpTop", "vcmi.radialWheel.moveTop", [heroPos]()
@@ -300,6 +298,10 @@ void CHeroList::CHeroItem::gesture(bool on, const Point & initialPosition, const
 		{
 			for (int i = heroPos; i < heroes.size() - 1; i++)
 				GAME->interface()->localState->swapWanderingHero(i, i + 1);
+		} },
+		{ RadialMenuConfig::ITEM_ALT_NE, true, "heroSwap", "vcmi.radialWheel.autoHeroes", [selectedHero = hero]()
+		{
+			ENGINE->windows().createAndPushWindow<CAutoHeroWindow>(selectedHero);
 		} },
 	};
 

@@ -10,6 +10,7 @@
 #include "StdInc.h"
 #include "PlayerLocalState.h"
 
+#include "../lib/autoheroes/AutoHeroConfig.h"
 #include "../lib/callback/CCallback.h"
 #include "../lib/json/JsonNode.h"
 #include "../lib/mapObjects/CGHeroInstance.h"
@@ -322,6 +323,11 @@ void PlayerLocalState::synchronizeState()
 	owner.cb->saveLocalState(data);
 }
 
+void PlayerLocalState::saveState()
+{
+	synchronizeState();
+}
+
 void PlayerLocalState::serialize(JsonNode & dest) const
 {
 	dest.clear();
@@ -347,6 +353,9 @@ void PlayerLocalState::serialize(JsonNode & dest) const
 			record["path"]["z"].Integer() = paths.at(hero).lastNode().coord.z;
 			record["path"]["layer"].Integer() = paths.at(hero).lastNode().layer;
 		}
+
+		// AutoHeroes is client-local state, just like hero order/sleep/path.
+		record["autoHeroes"] = AutoHeroes::serializeHeroConfig(AutoHeroes::readHeroConfig(hero->id));
 		dest["heroes"].Vector().push_back(record);
 	}
 	dest["spellbook"]["pageBattle"].Integer() = spellbookSettings.spellbookLastPageBattle;
@@ -398,6 +407,11 @@ void PlayerLocalState::deserialize(const JsonNode & source)
 		if (!vstd::contains(oldHeroes, heroPtr))
 			continue;
 
+		// Replace any stale session entry for the same object id with state from the save.
+		AutoHeroes::eraseHeroConfig(heroPtr->id);
+		if(hero["autoHeroes"].isStruct())
+			AutoHeroes::writeHeroConfig(heroPtr->id, AutoHeroes::deserializeHeroConfig(hero["autoHeroes"]));
+
 		wanderingHeroes.push_back(heroPtr);
 		vstd::erase(oldHeroes, heroPtr);
 
@@ -419,6 +433,10 @@ void PlayerLocalState::deserialize(const JsonNode & source)
 		spellbookSettings.spellbookLastTabBattle = SpellSchool(source["spellbook"]["tabBattle"].Integer());
 		spellbookSettings.spellbookLastTabAdvmap = SpellSchool(source["spellbook"]["tabAdvmap"].Integer());
 	}
+
+	// Heroes absent from stored local state are treated as new/manual heroes.
+	for(const auto * hero : oldHeroes)
+		AutoHeroes::eraseHeroConfig(hero->id);
 
 	// append any owned heroes / towns that were not present in loaded state
 	wanderingHeroes.insert(wanderingHeroes.end(), oldHeroes.begin(), oldHeroes.end());

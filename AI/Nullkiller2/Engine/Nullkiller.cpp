@@ -12,6 +12,9 @@
 
 #include "../../../lib/CPlayerState.h"
 #include "../../../lib/StartInfo.h"
+#include "../../../lib/mapObjects/CGDwelling.h"
+#include "../../../lib/mapObjects/CGHeroInstance.h"
+#include "../../../lib/mapObjects/IOwnableObject.h"
 #include "../../../lib/pathfinder/PathfinderCache.h"
 #include "../../../lib/pathfinder/PathfinderOptions.h"
 #include "../AIGateway.h"
@@ -27,8 +30,10 @@
 #include "../Behaviors/RecruitHeroBehavior.h"
 #include "../Behaviors/StayAtTownBehavior.h"
 #include "../Goals/Invalid.h"
+#include "../Goals/ExecuteHeroChain.h"
 #include "Goals/RecruitHero.h"
 #include "ResourceTrader.h"
+#include "../../../lib/autoheroes/AutoHeroConfig.h"
 
 namespace NK2AI
 {
@@ -52,6 +57,250 @@ const char * heroLockReasonName(HeroLockedReason reason)
 	}
 
 	return "unknown reason";
+}
+
+bool isAutoHeroCollectTarget(const CGObjectInstance * target)
+{
+	if(!target)
+		return false;
+
+	switch(target->ID)
+	{
+	case Obj::RESOURCE:
+	case Obj::RANDOM_RESOURCE:
+	case Obj::CAMPFIRE:
+	case Obj::FLOTSAM:
+	case Obj::LEAN_TO:
+	case Obj::MYSTICAL_GARDEN:
+	case Obj::SEA_CHEST:
+	case Obj::TREASURE_CHEST:
+	case Obj::WATER_WHEEL:
+	case Obj::WINDMILL:
+	case Obj::WAGON:
+	case Obj::CORPSE:
+	case Obj::SHIPWRECK_SURVIVOR:
+	case Obj::ARTIFACT:
+	case Obj::RANDOM_ART:
+	case Obj::RANDOM_TREASURE_ART:
+	case Obj::RANDOM_MINOR_ART:
+	case Obj::RANDOM_MAJOR_ART:
+	case Obj::RANDOM_RELIC_ART:
+	case Obj::SPELL_SCROLL:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool isAutoHeroCaptureTarget(const CGObjectInstance * target)
+{
+	if(!target || target->ID == Obj::HERO)
+		return false;
+
+	// Mines, towns, dwellings, garrisons, shipyards and modded flaggable
+	// objects all expose the same ownership interface. Using it keeps the
+	// AutoHeroes capture switch compatible with modded maps as well.
+	return dynamic_cast<const IOwnableObject *>(target) != nullptr;
+}
+
+bool isAutoHeroRecruitmentTarget(const CGObjectInstance * target)
+{
+	if(!target)
+		return false;
+
+	return dynamic_cast<const CGDwelling *>(target) != nullptr
+		|| target->ID == Obj::REFUGEE_CAMP;
+}
+
+const Goals::AbstractGoal * autoHeroGoal(const Goals::ITask * task)
+{
+	return dynamic_cast<const Goals::AbstractGoal *>(task);
+}
+
+const CGObjectInstance * autoHeroTargetObject(const Nullkiller * aiNk, const Goals::ITask * task)
+{
+	const auto * goal = autoHeroGoal(task);
+	if(!goal || goal->objid < 0)
+		return nullptr;
+
+	return aiNk->cc->getObj(ObjectInstanceID(goal->objid), false);
+}
+
+std::set<AutoHeroes::Action> autoHeroTaskActions(
+	const Nullkiller * aiNk,
+	const Goals::ITask * task,
+	const EvaluationContext & evaluationContext)
+{
+	std::set<AutoHeroes::Action> result;
+	const auto * goal = autoHeroGoal(task);
+	if(!goal)
+		return result;
+
+	if(goal->goalType == Goals::EXPLORE_NEIGHBOUR_TILE || goal->goalType == Goals::EXPLORATION_POINT)
+		result.insert(AutoHeroes::Action::EXPLORE);
+
+	const auto * target = autoHeroTargetObject(aiNk, task);
+	if(!target)
+	{
+		if(goal->goalType == Goals::EXECUTE_HERO_CHAIN)
+			result.insert(AutoHeroes::Action::EXPLORE);
+		return result;
+	}
+
+	if(isAutoHeroCollectTarget(target))
+		result.insert(AutoHeroes::Action::COLLECT_RESOURCES);
+
+	// Own towns are recruitment destinations; neutral/enemy towns are capture
+	// destinations. This prevents a hero with only "Recruit" enabled from
+	// capturing a neutral town as an unintended side effect. Map dwellings remain
+	// valid recruitment targets because visiting them is how their creatures are hired.
+	if(isAutoHeroRecruitmentTarget(target)
+		&& (target->ID != Obj::TOWN || target->getOwner() == aiNk->playerID))
+	{
+		result.insert(AutoHeroes::Action::RECRUIT_CREATURES);
+	}
+
+	if(isAutoHeroCaptureTarget(target) && target->getOwner() != aiNk->playerID)
+		result.insert(AutoHeroes::Action::CAPTURE_OBJECTS);
+
+	if(target->ID == Obj::MONSTER)
+		result.insert(AutoHeroes::Action::FIGHT_NEUTRALS);
+
+	// NK2 already understands map-specific rewardable objects. Query the target's
+	// direct development reward (without the generic battle-XP contribution that is
+	// added later to EvaluationContext.skillReward).
+	if(const auto * hero = task->getHero())
+	{
+		const auto role = aiNk->heroManager->getHeroRoleOrDefaultInefficient(hero);
+		if(evaluationContext.evaluator.getSkillReward(target, hero, role) > 0.001f)
+			result.insert(AutoHeroes::Action::LEVEL_UP);
+	}
+
+	// Unknown visitable targets are treated as generic capture/visit targets instead
+	// of silently bypassing the user's action switches.
+	if(result.empty())
+		result.insert(AutoHeroes::Action::CAPTURE_OBJECTS);
+
+	return result;
+}
+
+int autoHeroTaskPriorityRank(
+	const AutoHeroes::HeroConfig & config,
+	const std::set<AutoHeroes::Action> & actions)
+{
+	int best = static_cast<int>(config.priority.size());
+	for(const auto action : actions)
+	{
+		if(config.allows(action))
+			best = std::min(best, config.priorityOf(action));
+	}
+	return best;
+}
+
+bool autoHeroCombatAllowed(
+	const Nullkiller * aiNk,
+	const Goals::ITask * task,
+	const AutoHeroes::HeroConfig & config)
+{
+	const auto * chain = dynamic_cast<const Goals::ExecuteHeroChain *>(task);
+	if(!chain)
+		return true;
+
+	const auto & path = chain->getPath();
+	const auto danger = path.getTotalDanger();
+	if(danger == 0)
+		return true;
+
+	if(!config.allows(AutoHeroes::Action::FIGHT_NEUTRALS))
+		return false;
+
+	if(config.combatPolicy == AutoHeroes::CombatPolicy::DISABLED)
+		return false;
+
+	const auto * hero = path.targetHero;
+	if(!hero || !path.heroArmy)
+		return false;
+
+	const double armyValue = std::max<double>(1.0, path.heroArmy->estimateCombatValue());
+	const double predictedLossRatio = static_cast<double>(path.getTotalArmyLoss()) / armyValue;
+
+	if(config.combatPolicy == AutoHeroes::CombatPolicy::SAFE_ONLY)
+	{
+		return isSafeToVisit(hero, path.heroArmy, danger, aiNk->settings->getSafeAttackRatio())
+			&& predictedLossRatio <= 0.05;
+	}
+
+	// "Allow small losses" remains deliberately conservative. A battle must still
+	// be estimated as favourable and predicted army loss is capped at 20%.
+	return isSafeToVisit(hero, path.heroArmy, danger, 1.05f)
+		&& predictedLossRatio <= 0.20;
+}
+
+bool autoHeroTargetIsEnemyPlayer(const Nullkiller * aiNk, const CGObjectInstance * target)
+{
+	if(!target || (target->ID != Obj::HERO && target->ID != Obj::TOWN))
+		return false;
+
+	const auto owner = target->getOwner();
+	return owner.isValidPlayer()
+		&& aiNk->cc->getPlayerRelations(aiNk->playerID, owner) == PlayerRelations::ENEMIES;
+}
+
+bool autoHeroTaskAllowed(
+	const Nullkiller * aiNk,
+	const Goals::ITask * task,
+	const EvaluationContext & evaluationContext)
+{
+	if(!aiNk->isAutoHeroesPhase())
+		return true;
+
+	const auto * hero = task->getHero();
+	if(!aiNk->isAutoHeroEnabled(hero))
+		return false;
+
+	for(const auto affectedId : task->getAffectedObjects())
+	{
+		const auto * affectedHero = dynamic_cast<const CGHeroInstance *>(aiNk->cc->getObj(affectedId, false));
+		if(affectedHero && affectedHero->getOwner() == aiNk->playerID && !aiNk->isAutoHeroEnabled(affectedHero))
+			return false;
+	}
+
+	const auto config = AutoHeroes::readHeroConfig(hero->id);
+	const auto target = autoHeroTargetObject(aiNk, task);
+
+	// AutoHeroes v0.2 intentionally handles neutral map activity only. It will not
+	// start wars against enemy heroes/towns until that behaviour gets its own switch.
+	if(autoHeroTargetIsEnemyPlayer(aiNk, target))
+		return false;
+
+	const auto actions = autoHeroTaskActions(aiNk, task, evaluationContext);
+	const bool actionAllowed = std::any_of(actions.begin(), actions.end(), [&config](AutoHeroes::Action action)
+	{
+		return config.allows(action);
+	});
+	if(!actionAllowed)
+		return false;
+
+	if(config.movementRadius > 0)
+	{
+		const auto * goal = autoHeroGoal(task);
+		if(goal && goal->tile.x >= 0 && hero->visitablePos().dist2d(goal->tile) > config.movementRadius)
+			return false;
+	}
+
+	return autoHeroCombatAllowed(aiNk, task, config);
+}
+
+int autoHeroTaskRank(
+	const Nullkiller * aiNk,
+	const Goals::ITask * task,
+	const EvaluationContext & evaluationContext)
+{
+	if(!aiNk->isAutoHeroesPhase() || !task->getHero())
+		return 0;
+
+	const auto config = AutoHeroes::readHeroConfig(task->getHero()->id);
+	return autoHeroTaskPriorityRank(config, autoHeroTaskActions(aiNk, task, evaluationContext));
 }
 }
 
@@ -273,15 +522,56 @@ Goals::TTaskVec Nullkiller::buildPlanAndFilter(
 		}
 	);
 
+	TGoalVec eligibleTasks;
+	eligibleTasks.reserve(tasks.size());
+	for(const auto & task : tasks)
+	{
+		if(!isAutoHeroesPhase()
+			|| autoHeroTaskAllowed(this, task->asTask(), evaluationContexts.at(task.get())))
+		{
+			eligibleTasks.push_back(task);
+		}
+	}
+
+	if(isAutoHeroesPhase())
+	{
+		// User-defined action order is strict within a hero: if at least one viable
+		// task exists for a higher-ranked enabled action, lower-ranked actions wait.
+		std::map<const CGHeroInstance *, int> bestRankByHero;
+		for(const auto & task : eligibleTasks)
+		{
+			const auto * hero = task->asTask()->getHero();
+			if(!hero || task->asTask()->priority <= 0)
+				continue;
+
+			const int rank = autoHeroTaskRank(this, task->asTask(), evaluationContexts.at(task.get()));
+			auto it = bestRankByHero.find(hero);
+			if(it == bestRankByHero.end())
+				bestRankByHero.emplace(hero, rank);
+			else
+				it->second = std::min(it->second, rank);
+		}
+
+		vstd::erase_if(eligibleTasks, [this, &evaluationContexts, &bestRankByHero](const TSubgoal & task)
+		{
+			const auto * hero = task->asTask()->getHero();
+			const auto best = bestRankByHero.find(hero);
+			if(!hero || best == bestRankByHero.end() || task->asTask()->priority <= 0)
+				return false;
+
+			return autoHeroTaskRank(this, task->asTask(), evaluationContexts.at(task.get())) > best->second;
+		});
+	}
+
 	std::ranges::sort(
-		tasks,
+		eligibleTasks,
 		[](const TSubgoal & g1, const TSubgoal & g2) -> bool
 		{
 			return g2->asTask()->priority < g1->asTask()->priority;
 		}
 	);
 
-	for(const TSubgoal & task : tasks)
+	for(const TSubgoal & task : eligibleTasks)
 	{
 		taskPlan.mergeAndFilter(task);
 	}
@@ -308,7 +598,7 @@ void Nullkiller::resetState()
 	scanDepth = ScanDepth::MAIN_FULL;
 	lockedHeroes.clear();
 	dangerHitMap->resetHitmap();
-	useHeroChain = true;
+	useHeroChain = !isAutoHeroesPhase();
 	objectClusterizer->reset();
 
 	if(!baseGraph && isObjectGraphAllowed())
@@ -585,6 +875,39 @@ HeroLockedReason Nullkiller::getHeroLockedReason(const CGHeroInstance * hero) co
 	return found != lockedHeroes.end() ? found->second : HeroLockedReason::NOT_LOCKED;
 }
 
+bool Nullkiller::isAutoHeroesPhase() const
+{
+	return AutoHeroes::isPhaseActive() && AutoHeroes::phasePlayer() == playerID;
+}
+
+bool Nullkiller::isAutoHeroEnabled(const CGHeroInstance * hero) const
+{
+	if(!hero || hero->getOwner() != playerID)
+		return false;
+
+	const auto config = AutoHeroes::readHeroConfig(hero->id);
+	return config.enabled && !config.actions.empty();
+}
+
+bool Nullkiller::isTaskAllowedForAutoHeroes(const Goals::TTask & task) const
+{
+	if(!isAutoHeroesPhase())
+		return true;
+
+	const CGHeroInstance * primaryHero = task->getHero();
+	if(!isAutoHeroEnabled(primaryHero))
+		return false;
+
+	// Selective AutoHeroes must never use a manually-controlled hero as part of a chain.
+	for(const auto * hero : getTaskHeroes(task))
+	{
+		if(hero->getOwner() == playerID && !isAutoHeroEnabled(hero))
+			return false;
+	}
+
+	return true;
+}
+
 void Nullkiller::makeTurn()
 {
 	pathfinderTurnStorageMisses.store(0);
@@ -604,15 +927,19 @@ void Nullkiller::makeTurn()
 		if (!updateStateAndExecutePriorityPass(tasks, pass))
 			return;
 
-		reserveRequiredTownDefenders();
+		if(!isAutoHeroesPhase())
+			reserveRequiredTownDefenders();
 
 		tasks.clear();
 		decompose(tasks, sptr(CaptureObjectsBehavior()), 1);
-		decompose(tasks, sptr(ClusterBehavior()), MAX_DEPTH);
-		decompose(tasks, sptr(DefenceBehavior()), MAX_DEPTH);
-		decompose(tasks, sptr(EscapeBehavior()), 1);
-		decompose(tasks, sptr(GatherArmyBehavior()), MAX_DEPTH);
-		// decompose(tasks, sptr(StayAtTownBehavior()), MAX_DEPTH);
+
+		if(!isAutoHeroesPhase())
+		{
+			decompose(tasks, sptr(ClusterBehavior()), MAX_DEPTH);
+			decompose(tasks, sptr(DefenceBehavior()), MAX_DEPTH);
+			decompose(tasks, sptr(EscapeBehavior()), 1);
+			decompose(tasks, sptr(GatherArmyBehavior()), MAX_DEPTH);
+		}
 
 		if(!isOpenMap())
 			decompose(tasks, sptr(ExplorationBehavior()), MAX_DEPTH);
@@ -624,6 +951,8 @@ void Nullkiller::makeTurn()
 		{
 			prioOfTask = prio;
 			selectedTasks = buildPlanAndFilter(tasks, evaluationContexts, prio);
+			if(isAutoHeroesPhase())
+				vstd::erase_if(selectedTasks, [this](const Goals::TTask & task) { return !isTaskAllowedForAutoHeroes(task); });
 			if (!selectedTasks.empty())
 			{
 				// Activate for deep debugging, otherwise too noisy even for trace level 2
@@ -750,7 +1079,8 @@ void Nullkiller::makeTurn()
 			}
 		}
 
-		hasAnySuccess |= ResourceTrader::trade(*buildAnalyzer, *cc, getFreeResources());
+		if(!isAutoHeroesPhase())
+			hasAnySuccess |= ResourceTrader::trade(*buildAnalyzer, *cc, getFreeResources());
 		if(!hasAnySuccess)
 		{
 			if(hasUnlockedHeroWithMovement())
@@ -763,7 +1093,10 @@ void Nullkiller::makeTurn()
 		}
 
 		for(const auto * heroInfo : cc->getHeroesInfo())
-			AIGateway::pickBestArtifacts(cc, heroInfo);
+		{
+			if(!isAutoHeroesPhase() || isAutoHeroEnabled(heroInfo))
+				AIGateway::pickBestArtifacts(cc, heroInfo);
+		}
 
 		if(pass == settings->getMaxPass())
 			logAi->warn("MaxPass reached. Terminating AI turn.");
@@ -773,6 +1106,11 @@ void Nullkiller::makeTurn()
 bool Nullkiller::updateStateAndExecutePriorityPass(Goals::TGoalVec & tempResults, const int passIndex)
 {
 	updateState();
+
+	// AutoHeroes is a hero-only phase. Do not build towns, recruit extra heroes,
+	// trade resources or run other player-wide priority actions here.
+	if(isAutoHeroesPhase())
+		return true;
 
 	Goals::TTask bestPrioPassTask = taskptr(Goals::Invalid());
 	for(int i = 1; i <= settings->getMaxPriorityPass() && cc->getPlayerStatus(playerID) == EPlayerStatus::INGAME; i++)
@@ -875,6 +1213,9 @@ bool Nullkiller::hasUnlockedHeroWithMovement() const
 		cc->getHeroesInfo(),
 		[this](const CGHeroInstance * hero) -> bool
 		{
+			if(isAutoHeroesPhase() && !isAutoHeroEnabled(hero))
+				return false;
+
 			return !hero->isGarrisoned()
 				&& !isHeroLocked(hero)
 				&& hero->movementPointsRemaining() > 100;
@@ -912,6 +1253,22 @@ bool Nullkiller::executeTask(const Goals::TTask & task)
 TResources Nullkiller::getFreeResources() const
 {
 	auto freeRes = cc->getResourceAmount() - lockedResources;
+
+	if(isAutoHeroesPhase())
+	{
+		int goldReserve = 0;
+		if(activeHero && isAutoHeroEnabled(activeHero))
+			goldReserve = AutoHeroes::readHeroConfig(activeHero->id).goldReserve;
+		else
+		{
+			for(const auto * hero : cc->getHeroesInfo())
+				if(isAutoHeroEnabled(hero))
+					goldReserve = std::max(goldReserve, AutoHeroes::readHeroConfig(hero->id).goldReserve);
+		}
+
+		freeRes[EGameResID::GOLD] = std::max<si64>(0, freeRes[EGameResID::GOLD] - goldReserve);
+	}
+
 	freeRes.positive();
 	return freeRes;
 }
@@ -955,6 +1312,9 @@ HeroMap<HeroRole> Nullkiller::getHeroesForPathfinding() const
 	HeroMap<HeroRole> activeHeroes;
 	for(auto hero : cc->getHeroesInfo())
 	{
+		if(isAutoHeroesPhase() && !isAutoHeroEnabled(hero))
+			continue;
+
 		activeHeroes[hero] = heroManager->getHeroRoleOrDefaultInefficient(hero);
 	}
 	return activeHeroes;

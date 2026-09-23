@@ -37,12 +37,15 @@
 #include "render/IScreenHandler.h"
 #include "../PlayerLocalState.h"
 #include "../CPlayerInterface.h"
+#include "../CServerHandler.h"
+#include "../Client.h"
 
 #include "../../lib/mapping/CMap.h"
 #include "../../lib/GameLibrary.h"
 #include "../../lib/IGameSettings.h"
 #include "../../lib/StartInfo.h"
 #include "../../lib/callback/CCallback.h"
+#include "../../lib/autoheroes/AutoHeroConfig.h"
 #include "../../lib/texts/CGeneralTextHandler.h"
 #include "../../lib/mapObjects/CGHeroInstance.h"
 #include "../../lib/mapObjects/CGTownInstance.h"
@@ -512,9 +515,20 @@ void AdventureMapInterface::hotkeyEndingTurn()
 	}
 
 	GAME->interface()->makingTurn = false;
-	GAME->interface()->cb->endTurn();
-
 	mapAudio->onPlayerTurnEnded();
+
+	if(AutoHeroes::hasAnyEnabledHero())
+	{
+		const PlayerColor player = GAME->interface()->playerID;
+		ENGINE->dispatchMainThread([player]()
+		{
+			if(!GAME->server().client->startAutoHeroesPhase(player) && GAME->interface())
+				GAME->interface()->cb->endTurn();
+		});
+		return;
+	}
+
+	GAME->interface()->cb->endTurn();
 
 	// Normally, game will receive PlayerStartsTurn call almost instantly with new player ID that will switch UI to waiting mode
 	// However, when simturns are active it is possible for such call not to come because another player is still acting

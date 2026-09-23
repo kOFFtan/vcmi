@@ -95,6 +95,9 @@ public:
 	void serialize(JsonNode & dest) const;
 	void deserialize(const JsonNode & source);
 
+	/// Persist current client-only state (including AutoHeroes settings) to game state.
+	void saveState();
+
 	/// Changes currently selected object
 	void setSelection(const CArmedInstance *sel);
 	void setSelection(const CArmedInstance *sel, bool force);

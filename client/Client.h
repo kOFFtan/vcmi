@@ -192,6 +192,13 @@ public:
 	/// must not be called from a netpack visitor - it replaces the very interfaces those iterate over.
 	void toggleAiSolo(EAiSoloMode mode, bool ownVision = false);
 
+	/// Hands only configured AutoHeroes to the adventure AI for the rest of the current turn.
+	/// Returns false when there is no eligible configured hero.
+	bool startAutoHeroesPhase(PlayerColor color);
+
+	/// Restores the normal human interface when the next turn of this player starts.
+	void finishAutoHeroesPhase(PlayerColor color);
+
 	int sendRequest(const CPackForServer & request, PlayerColor player, bool waitTillRealize) override; //returns ID given to that request
 	std::optional<BattleAction> makeSurrenderRetreatDecision(PlayerColor player, const BattleID & battleID, const BattleStateInfoForRetreat & battleState) override;
 

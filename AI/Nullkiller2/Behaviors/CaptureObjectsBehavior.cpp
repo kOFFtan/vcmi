@@ -15,6 +15,7 @@
 #include "../Goals/Invalid.h"
 #include "CaptureObjectsBehavior.h"
 #include "../AIUtility.h"
+#include "../../../lib/autoheroes/AutoHeroConfig.h"
 
 namespace NK2AI
 {
@@ -144,7 +145,44 @@ Goals::TGoalVec CaptureObjectsBehavior::getVisitGoals(
 			continue;
 		}
 
-		auto isSafe = isSafeToVisit(hero, path.heroArmy, danger, nullkiller->settings->getSafeAttackRatio());
+		bool isSafe = isSafeToVisit(hero, path.heroArmy, danger, nullkiller->settings->getSafeAttackRatio());
+
+		if(nullkiller->isAutoHeroesPhase() && nullkiller->isAutoHeroEnabled(hero))
+		{
+			const auto autoConfig = AutoHeroes::readHeroConfig(hero->id);
+
+			if(autoConfig.movementRadius > 0
+				&& hero->visitablePos().dist2d(path.targetTile()) > autoConfig.movementRadius)
+			{
+				continue;
+			}
+
+			if(danger > 0)
+			{
+				if(!autoConfig.allows(AutoHeroes::Action::FIGHT_NEUTRALS)
+					|| autoConfig.combatPolicy == AutoHeroes::CombatPolicy::DISABLED
+					|| !path.heroArmy)
+				{
+					isSafe = false;
+				}
+				else
+				{
+					const double armyValue = std::max<double>(1.0, path.heroArmy->estimateCombatValue());
+					const double predictedLossRatio = static_cast<double>(path.getTotalArmyLoss()) / armyValue;
+
+					if(autoConfig.combatPolicy == AutoHeroes::CombatPolicy::SAFE_ONLY)
+					{
+						isSafe = isSafeToVisit(hero, path.heroArmy, danger, nullkiller->settings->getSafeAttackRatio())
+							&& predictedLossRatio <= 0.05;
+					}
+					else
+					{
+						isSafe = isSafeToVisit(hero, path.heroArmy, danger, 1.05f)
+							&& predictedLossRatio <= 0.20;
+					}
+				}
+			}
+		}
 
 #if NK2AI_TRACE_LEVEL >= 2
 		logAi->trace(
