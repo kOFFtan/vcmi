@@ -186,6 +186,7 @@ set(vcmiclientcommon_SRCS
 	filters/FSR/fsr_rcas.cpp
 
 	ArtifactsUIController.cpp
+	AutoHeroController.cpp
 	GameEngine.cpp
 	GameInstance.cpp
 	Translator.cpp
@@ -412,6 +413,7 @@ set(vcmiclientcommon_HEADERS
 	filters/FSR/fsr_rcas.h
 
 	ArtifactsUIController.h
+	AutoHeroController.h
 	CMT.h
 	CPlayerInterface.h
 	GameEngine.h

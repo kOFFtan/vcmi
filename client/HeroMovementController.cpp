@@ -279,6 +279,8 @@ void HeroMovementController::endMove(const CGHeroInstance * hero)
 	stopMovementSound();
 	adventureInt->onHeroChanged(hero);
 	ENGINE->cursor().show();
+	if(GAME->interface())
+		GAME->interface()->onAutoHeroMovementFinished(hero);
 }
 
 AudioPath HeroMovementController::getMovementSoundFor(const CGHeroInstance * hero, int3 posPrev, int3 posNext, EPathNodeAction moveType)

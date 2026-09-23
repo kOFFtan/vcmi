@@ -13,6 +13,7 @@
 #include <vcmi/Artifact.h>
 
 #include "Client.h"
+#include "AutoHeroController.h"
 #include "CServerHandler.h"
 #include "HeroMovementController.h"
 #include "PlayerLocalState.h"
@@ -133,6 +134,7 @@ std::shared_ptr<BattleInterface> CPlayerInterface::battleInt;
 CPlayerInterface::CPlayerInterface(PlayerColor Player):
 	localState(std::make_unique<PlayerLocalState>(*this)),
 	movementController(std::make_unique<HeroMovementController>()),
+	autoHeroController(std::make_unique<AutoHeroController>(*this)),
 	artifactController(std::make_unique<ArtifactsUIController>())
 
 {
@@ -179,6 +181,24 @@ bool CPlayerInterface::isHeroMoving() const
 	return movementController->isHeroMoving();
 }
 
+bool CPlayerInterface::runAutoHeroesNow()
+{
+	return autoHeroController->start();
+}
+
+void CPlayerInterface::onAutoHeroMovementFinished(const CGHeroInstance * hero)
+{
+	if(!hero)
+		return;
+
+	const ObjectInstanceID heroId = hero->id;
+	ENGINE->dispatchMainThread([this, heroId]()
+	{
+		const CGHeroInstance * currentHero = cb ? cb->getHero(heroId) : nullptr;
+		autoHeroController->onHeroMovementFinished(currentHero);
+	});
+}
+
 std::shared_ptr<const CPathsInfo> CPlayerInterface::getPathsInfo(const CGHeroInstance * h)
 {
 	return pathfinderCache->getPathsInfo(h);
@@ -223,6 +243,7 @@ void CPlayerInterface::playerEndsTurn(PlayerColor player)
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 	if (player == playerID)
 	{
+		autoHeroController->cancel();
 		makingTurn = false;
 		delayQueuedDialogsUntilInputSettles = false;
 		levelUpChainPendingContinuation = false;
@@ -1619,6 +1640,7 @@ void CPlayerInterface::playerBlocked(int reason, bool start)
 void CPlayerInterface::update()
 {
 	tryShowNextPendingDialog();
+	autoHeroController->update();
 }
 
 void CPlayerInterface::endNetwork()

@@ -45,7 +45,6 @@
 #include "../../lib/IGameSettings.h"
 #include "../../lib/StartInfo.h"
 #include "../../lib/callback/CCallback.h"
-#include "../../lib/autoheroes/AutoHeroConfig.h"
 #include "../../lib/texts/CGeneralTextHandler.h"
 #include "../../lib/mapObjects/CGHeroInstance.h"
 #include "../../lib/mapObjects/CGTownInstance.h"
@@ -517,17 +516,9 @@ void AdventureMapInterface::hotkeyEndingTurn()
 	GAME->interface()->makingTurn = false;
 	mapAudio->onPlayerTurnEnded();
 
-	if(AutoHeroes::hasAnyEnabledHero())
-	{
-		const PlayerColor player = GAME->interface()->playerID;
-		ENGINE->dispatchMainThread([player]()
-		{
-			if(!GAME->server().client->startAutoHeroesPhase(player) && GAME->interface())
-				GAME->interface()->cb->endTurn();
-		});
-		return;
-	}
-
+	// Stage 6: End Turn is always the native VCMI action again.
+	// AutoHeroes runs explicitly through the live human interface and never owns
+	// the whole player turn.
 	GAME->interface()->cb->endTurn();
 
 	// Normally, game will receive PlayerStartsTurn call almost instantly with new player ID that will switch UI to waiting mode

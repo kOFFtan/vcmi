@@ -47,6 +47,7 @@ class MotionInterested;
 class PlayerLocalState;
 class TimeInterested;
 class HeroMovementController;
+class AutoHeroController;
 
 namespace boost
 {
@@ -83,6 +84,7 @@ class CPlayerInterface : public CGameInterface
 	bool levelUpChainPendingContinuation = false;
 
 	std::unique_ptr<HeroMovementController> movementController;
+	std::unique_ptr<AutoHeroController> autoHeroController;
 	std::unique_ptr<PathfinderCache> pathfinderCache;
 public: // TODO: make private
 	std::unique_ptr<ArtifactsUIController> artifactController;
@@ -238,6 +240,10 @@ public: // public interface for use by client via GAME->interface() access
 
 	/// True while a hero walks a path, including the pauses between single steps
 	bool isHeroMoving() const;
+
+	/// Run configured AutoHeroes through the live human interface. The human turn stays active.
+	bool runAutoHeroesNow();
+	void onAutoHeroMovementFinished(const CGHeroInstance * hero);
 
 	///returns true if all events are processed internally
 	bool capturedAllEvents();
