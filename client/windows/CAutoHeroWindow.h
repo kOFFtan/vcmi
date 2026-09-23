@@ -1,0 +1,36 @@
+/*
+ * CAutoHeroWindow.h, part of VCMI AutoHeroes extension
+ *
+ * License: GNU General Public License v2.0 or later
+ */
+#pragma once
+
+#include "CWindowObject.h"
+#include "../../lib/autoheroes/AutoHeroConfig.h"
+
+class CGHeroInstance;
+class CButton;
+class CLabel;
+class CToggleButton;
+
+class CAutoHeroWindow : public CWindowObject
+{
+	const CGHeroInstance * hero;
+	AutoHeroes::HeroConfig draft;
+
+	std::vector<std::shared_ptr<CIntObject>> controls;
+	std::vector<std::shared_ptr<CLabel>> priorityLabels;
+	std::shared_ptr<CButton> recruitmentButton;
+	std::shared_ptr<CButton> combatButton;
+
+	void updatePriorityLabels();
+	void movePriority(AutoHeroes::Action action, int delta);
+	void updateRecruitmentButton();
+	void updateCombatButton();
+	void saveAndClose();
+
+	std::string actionLabel(AutoHeroes::Action action) const;
+
+public:
+	explicit CAutoHeroWindow(const CGHeroInstance * hero);
+};
