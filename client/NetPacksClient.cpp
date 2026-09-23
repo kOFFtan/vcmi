@@ -992,12 +992,12 @@ void ApplyClientNetPackVisitor::visitPlayerStartsTurn(PlayerStartsTurn & pack)
 {
 	logNetwork->debug("Server gives turn to %s", pack.player.toString());
 
-	// AutoHeroes owns only the remainder of one human turn. Restore the human
-	// interface before dispatching the next real turn to that player.
-	if(AutoHeroes::isPhaseActive() && AutoHeroes::phasePlayer() == pack.player)
-		cl.finishAutoHeroesPhase(pack.player);
+    // AutoHeroes starts Nullkiller2 for the current human turn.
+    // Do not restore human control before AI receives yourTurn().
+    if(AutoHeroes::isPhaseActive() && AutoHeroes::phasePlayer() == pack.player)
+        logGlobal->info("AutoHeroes v0.5: PlayerStartsTurn dispatched to Nullkiller2");
 
-	callAllInterfaces(cl, &IGameEventsReceiver::playerStartsTurn, pack.player);
+    callAllInterfaces(cl, &IGameEventsReceiver::playerStartsTurn, pack.player);
 	callOnlyThatInterface(cl, pack.player, &CGameInterface::yourTurn, pack.queryID);
 }
 
@@ -1005,9 +1005,15 @@ void ApplyClientNetPackVisitor::visitPlayerEndsTurn(PlayerEndsTurn & pack)
 {
 	logNetwork->debug("Server ends turn of %s", pack.player.toString());
 
-	callAllInterfaces(cl, &IGameEventsReceiver::playerEndsTurn, pack.player);
+    callAllInterfaces(cl, &IGameEventsReceiver::playerEndsTurn, pack.player);
 
-	if(!settings["session"]["aiSolo"].Bool() || !GAME->interface() || GAME->interface()->playerID != pack.player)
+    if(AutoHeroes::isPhaseActive() && AutoHeroes::phasePlayer() == pack.player)
+    {
+        logGlobal->info("AutoHeroes v0.5: PlayerEndsTurn received; restoring human interface");
+        cl.finishAutoHeroesPhase(pack.player);
+    }
+
+    if(!settings["session"]["aiSolo"].Bool() || !GAME->interface() || GAME->interface()->playerID != pack.player)
 		return;
 
 	// the AI has finished the turn it was asked to stop after

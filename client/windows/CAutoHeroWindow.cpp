@@ -65,7 +65,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 94, 720, 246), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 92), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 
-	std::string title = tr("vcmi.autoHeroes.title") + ": " + GAME->translator().translate(hero->getNameTextID());
+	std::string title = tr("vcmi.autoHeroes.title") + " v0.5: " + GAME->translator().translate(hero->getNameTextID());
 	keep(std::make_shared<CLabel>(WIN_W / 2, 24, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 700));
 
 	auto enabled = keep(std::make_shared<CToggleButton>(
@@ -265,8 +265,16 @@ void CAutoHeroWindow::saveAndClose()
 
 void CAutoHeroWindow::saveAndRun()
 {
-	persistSettings();
-	close();
+    persistSettings();
+
+    if(!draft.enabled || draft.actions.empty())
+    {
+        logGlobal->warn("AutoHeroes v0.5: run-now ignored because automation is disabled or has no actions");
+        close();
+        return;
+    }
+
+    close();
 
 	// AutoHeroes currently owns the remainder of the player's turn. Re-use the
 	// normal end-turn path so autosave/audio/UI state stay consistent and only the

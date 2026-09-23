@@ -447,14 +447,15 @@ bool CClient::startAutoHeroesPhase(PlayerColor color)
 		logGlobal->error("AutoHeroes requires %s, but that adventure AI is unavailable", aiName);
 		return false;
 	}
-	logGlobal->info("AutoHeroes phase for player %s will be handled by %s", color.toString(), aiName);
+	logGlobal->info("AutoHeroes v0.5: phase for player %s will be handled by %s", color.toString(), aiName);
 
 	AutoHeroes::setPhasePlayer(color);
 	AutoHeroes::setPhaseActive(true);
 
 	removeGUI();
 	installNewPlayerInterface(AIFactory::createAdventureAI(aiName), color);
-	giveTurnLocally(color);
+	logGlobal->info("AutoHeroes v0.5: Nullkiller2 installed for %s; dispatching synthetic PlayerStartsTurn", color.toString());
+giveTurnLocally(color);
 	return true;
 }
 
@@ -463,7 +464,7 @@ void CClient::finishAutoHeroesPhase(PlayerColor color)
 	if(!AutoHeroes::isPhaseActive() || AutoHeroes::phasePlayer() != color)
 		return;
 
-	logGlobal->info("AutoHeroes phase for player %s finished; restoring human interface", color.toString());
+	logGlobal->info("AutoHeroes v0.5: phase for player %s finished; restoring human interface", color.toString());
 	AutoHeroes::clearRuntimePhase();
 	installNewPlayerInterface(std::make_shared<CPlayerInterface>(color), color);
 }
