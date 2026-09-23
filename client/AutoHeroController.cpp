@@ -10,6 +10,7 @@
 #include "PlayerLocalState.h"
 
 #include "../lib/autoheroes/AutoHeroConfig.h"
+#include "../lib/ConditionalWait.h"
 #include "../lib/callback/CCallback.h"
 #include "../lib/mapObjects/CGHeroInstance.h"
 #include "../lib/mapObjects/CGObjectInstance.h"
