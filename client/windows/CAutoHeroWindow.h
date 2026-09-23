@@ -21,13 +21,17 @@ class CAutoHeroWindow : public CWindowObject
 	std::vector<std::shared_ptr<CIntObject>> controls;
 	std::vector<std::shared_ptr<CLabel>> priorityLabels;
 	std::shared_ptr<CButton> recruitmentButton;
+	std::shared_ptr<CButton> foreignSlotsButton;
 	std::shared_ptr<CButton> combatButton;
 
 	void updatePriorityLabels();
 	void movePriority(AutoHeroes::Action action, int delta);
 	void updateRecruitmentButton();
+	void updateForeignSlotsButton();
 	void updateCombatButton();
+	void persistSettings();
 	void saveAndClose();
+	void saveAndRun();
 
 	std::string actionLabel(AutoHeroes::Action action) const;
 

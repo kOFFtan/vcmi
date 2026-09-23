@@ -7,9 +7,13 @@
 #include "CAutoHeroWindow.h"
 
 #include "../GameInstance.h"
+#include "../GameEngine.h"
+#include "../adventureMap/AdventureMapInterface.h"
 #include "../CPlayerInterface.h"
 #include "../PlayerLocalState.h"
 #include "../widgets/Buttons.h"
+#include "../widgets/GraphicalPrimitiveCanvas.h"
+#include "../widgets/Images.h"
 #include "../widgets/TextControls.h"
 #include "../gui/Shortcut.h"
 #include "render/Colors.h"
@@ -31,11 +35,18 @@ const std::array<AutoHeroes::Action, 6> ACTIONS = {
 }
 
 CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
-	: CWindowObject(PLAYER_COLORED | BORDERED, ImagePath::builtin("questDialog"))
+	: CWindowObject(PLAYER_COLORED | BORDERED)
 	, hero(hero_)
 	, draft(AutoHeroes::readHeroConfig(hero_->id))
 {
 	OBJECT_CONSTRUCTION;
+
+	constexpr int WIN_W = 760;
+	constexpr int WIN_H = 520;
+
+	pos = Rect(pos.x, pos.y, WIN_W, WIN_H);
+	updateShadow();
+	center();
 
 	auto tr = [](const std::string & key)
 	{
@@ -48,28 +59,37 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 		return widget;
 	};
 
+	// Neutral tiled background instead of questDialog: that image contains baked-in
+	// black quest text boxes which overlapped the AutoHeroes controls on Android.
+	keep(std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK"), Rect(0, 0, WIN_W, WIN_H)));
+	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 94, 720, 246), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 92), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+
 	std::string title = tr("vcmi.autoHeroes.title") + ": " + GAME->translator().translate(hero->getNameTextID());
-	keep(std::make_shared<CLabel>(300, 24, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 520));
+	keep(std::make_shared<CLabel>(WIN_W / 2, 24, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 700));
 
 	auto enabled = keep(std::make_shared<CToggleButton>(
-		Point(40, 48),
+		Point(30, 50),
 		AnimationPath::builtin("sysopchk.def"),
 		CButton::tooltip(tr("vcmi.autoHeroes.enabled")),
 		[this](bool selected){ draft.enabled = selected; }));
 	enabled->setSelectedSilent(draft.enabled);
-	keep(std::make_shared<CLabel>(78, 55, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, tr("vcmi.autoHeroes.enabled")));
+	keep(std::make_shared<CLabel>(68, 57, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, tr("vcmi.autoHeroes.enabled")));
+	keep(std::make_shared<CLabel>(735, 57, FONT_SMALL, ETextAlignment::TOPRIGHT, Colors::YELLOW, tr("vcmi.autoHeroes.runHint"), 520));
 
-	keep(std::make_shared<CLabel>(78, 86, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.actions")));
-	keep(std::make_shared<CLabel>(332, 86, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.priority")));
+	keep(std::make_shared<CLabel>(68, 108, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.actions")));
+	keep(std::make_shared<CLabel>(515, 108, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.priority")));
+	keep(std::make_shared<CLabel>(575, 108, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.higher"), 70));
+	keep(std::make_shared<CLabel>(665, 108, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.lower"), 70));
 
 	priorityLabels.reserve(ACTIONS.size());
 	for(size_t i = 0; i < ACTIONS.size(); ++i)
 	{
 		const auto action = ACTIONS[i];
-		const int y = 106 + static_cast<int>(i) * 34;
+		const int y = 138 + static_cast<int>(i) * 32;
 
 		auto toggle = keep(std::make_shared<CToggleButton>(
-			Point(40, y - 7),
+			Point(30, y - 7),
 			AnimationPath::builtin("sysopchk.def"),
 			CButton::tooltip(actionLabel(action)),
 			[this, action](bool selected)
@@ -81,22 +101,22 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 			}));
 		toggle->setSelectedSilent(draft.actions.contains(action));
 
-		keep(std::make_shared<CLabel>(78, y, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, actionLabel(action), 220));
+		keep(std::make_shared<CLabel>(68, y, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, actionLabel(action), 370));
 
-		auto rank = std::make_shared<CLabel>(332, y, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, "", 40);
+		auto rank = std::make_shared<CLabel>(515, y, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, "", 36);
 		priorityLabels.push_back(rank);
 
-		auto up = keep(std::make_shared<CButton>(Point(374, y - 10), AnimationPath::builtin("settingsWindow/button32"), CButton::tooltip(tr("vcmi.autoHeroes.moveUp")), [this, action](){ movePriority(action, -1); }));
-		up->setTextOverlay("↑", FONT_MEDIUM, Colors::YELLOW);
+		auto up = keep(std::make_shared<CButton>(Point(540, y - 11), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.moveUp")), [this, action](){ movePriority(action, -1); }));
+		up->setTextOverlay(tr("vcmi.autoHeroes.higher"), FONT_SMALL, Colors::YELLOW);
 
-		auto down = keep(std::make_shared<CButton>(Point(410, y - 10), AnimationPath::builtin("settingsWindow/button32"), CButton::tooltip(tr("vcmi.autoHeroes.moveDown")), [this, action](){ movePriority(action, +1); }));
-		down->setTextOverlay("↓", FONT_MEDIUM, Colors::YELLOW);
+		auto down = keep(std::make_shared<CButton>(Point(630, y - 11), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.moveDown")), [this, action](){ movePriority(action, +1); }));
+		down->setTextOverlay(tr("vcmi.autoHeroes.lower"), FONT_SMALL, Colors::YELLOW);
 	}
 
 	updatePriorityLabels();
 
-	keep(std::make_shared<CLabel>(40, 315, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitment")));
-	recruitmentButton = std::make_shared<CButton>(Point(40, 334), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitmentHelp")), [this]()
+	keep(std::make_shared<CLabel>(30, 362, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitment")));
+	recruitmentButton = keep(std::make_shared<CButton>(Point(30, 382), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitmentHelp")), [this]()
 	{
 		draft.recruitmentScope = draft.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
 			? AutoHeroes::RecruitmentScope::UNRESTRICTED
@@ -106,11 +126,25 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 		else if(draft.maxForeignFactionSlots == 0)
 			draft.maxForeignFactionSlots = -1;
 		updateRecruitmentButton();
-	});
+		updateForeignSlotsButton();
+	}));
 	updateRecruitmentButton();
 
-	keep(std::make_shared<CLabel>(260, 315, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.combat")));
-	combatButton = std::make_shared<CButton>(Point(260, 334), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.combatHelp")), [this]()
+	keep(std::make_shared<CLabel>(230, 362, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.foreignSlots")));
+	foreignSlotsButton = keep(std::make_shared<CButton>(Point(230, 382), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.foreignSlotsHelp")), [this]()
+	{
+		if(draft.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY)
+			return;
+		if(draft.maxForeignFactionSlots < 0 || draft.maxForeignFactionSlots >= 7)
+			draft.maxForeignFactionSlots = 1;
+		else
+			++draft.maxForeignFactionSlots;
+		updateForeignSlotsButton();
+	}));
+	updateForeignSlotsButton();
+
+	keep(std::make_shared<CLabel>(430, 362, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.combat")));
+	combatButton = keep(std::make_shared<CButton>(Point(430, 382), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.combatHelp")), [this]()
 	{
 		switch(draft.combatPolicy)
 		{
@@ -125,13 +159,17 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 			break;
 		}
 		updateCombatButton();
-	});
+	}));
 	updateCombatButton();
 
-	auto ok = keep(std::make_shared<CButton>(Point(490, 385), AnimationPath::builtin("IOKAY.DEF"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
-	auto cancel = keep(std::make_shared<CButton>(Point(418, 385), AnimationPath::builtin("ICANCEL.DEF"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
-	(void)ok;
-	(void)cancel;
+	auto run = keep(std::make_shared<CButton>(Point(30, 462), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
+	run->setTextOverlay(tr("vcmi.autoHeroes.runNow"), FONT_SMALL, Colors::YELLOW);
+
+	auto cancel = keep(std::make_shared<CButton>(Point(500, 462), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
+	cancel->setTextOverlay(tr("vcmi.autoHeroes.cancelShort"), FONT_SMALL, Colors::YELLOW);
+
+	auto save = keep(std::make_shared<CButton>(Point(590, 462), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
+	save->setTextOverlay(tr("vcmi.autoHeroes.saveShort"), FONT_SMALL, Colors::YELLOW);
 }
 
 std::string CAutoHeroWindow::actionLabel(AutoHeroes::Action action) const
@@ -181,6 +219,25 @@ void CAutoHeroWindow::updateRecruitmentButton()
 	recruitmentButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
 }
 
+void CAutoHeroWindow::updateForeignSlotsButton()
+{
+	if(draft.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY)
+	{
+		foreignSlotsButton->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.autoHeroes.foreignSlotsNone"), FONT_SMALL, Colors::YELLOW);
+		foreignSlotsButton->block(true);
+		return;
+	}
+
+	foreignSlotsButton->block(false);
+	if(draft.maxForeignFactionSlots < 0)
+	{
+		foreignSlotsButton->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.autoHeroes.foreignSlotsUnlimited"), FONT_SMALL, Colors::YELLOW);
+		return;
+	}
+
+	foreignSlotsButton->setTextOverlay(std::to_string(std::clamp(draft.maxForeignFactionSlots, 1, 7)), FONT_SMALL, Colors::YELLOW);
+}
+
 void CAutoHeroWindow::updateCombatButton()
 {
 	std::string key;
@@ -193,10 +250,30 @@ void CAutoHeroWindow::updateCombatButton()
 	combatButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
 }
 
-void CAutoHeroWindow::saveAndClose()
+void CAutoHeroWindow::persistSettings()
 {
 	AutoHeroes::writeHeroConfig(hero->id, draft);
 	if(GAME->interface() && GAME->interface()->localState)
 		GAME->interface()->localState->saveState();
+}
+
+void CAutoHeroWindow::saveAndClose()
+{
+	persistSettings();
 	close();
+}
+
+void CAutoHeroWindow::saveAndRun()
+{
+	persistSettings();
+	close();
+
+	// AutoHeroes currently owns the remainder of the player's turn. Re-use the
+	// normal end-turn path so autosave/audio/UI state stay consistent and only the
+	// configured heroes are handed to NK2 before the turn is finally ended.
+	ENGINE->dispatchMainThread([]()
+	{
+		if(adventureInt)
+			adventureInt->hotkeyEndingTurn();
+	});
 }

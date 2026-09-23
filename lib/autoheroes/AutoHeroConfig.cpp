@@ -207,6 +207,11 @@ HeroConfig readHeroConfig(ObjectInstanceID heroId)
 	return deserializeHeroConfig(*node);
 }
 
+bool hasHeroConfig(ObjectInstanceID heroId)
+{
+	return findHeroNode(heroId) != nullptr;
+}
+
 void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
 {
 	Settings node = ::settings.write["session"][SESSION_KEY][HEROES_KEY][std::to_string(heroId.getNum())];

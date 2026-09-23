@@ -58,6 +58,7 @@ struct HeroConfig
 
 /// Runtime/session data. Game-save persistence is handled through PlayerLocalState.
 HeroConfig readHeroConfig(ObjectInstanceID heroId);
+bool hasHeroConfig(ObjectInstanceID heroId);
 void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config);
 void eraseHeroConfig(ObjectInstanceID heroId);
 void clearAllHeroConfigs();

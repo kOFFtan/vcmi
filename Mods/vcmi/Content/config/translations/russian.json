@@ -1109,5 +1109,16 @@
 	"vcmi.autoHeroes.recruitAny": "Без ограничений",
 	"vcmi.autoHeroes.combatOff": "Не атаковать",
 	"vcmi.autoHeroes.combatSafe": "Только безопасные бои",
-	"vcmi.autoHeroes.combatLosses": "Допускать небольшие потери"
+	"vcmi.autoHeroes.combatLosses": "Допускать небольшие потери",
+	"vcmi.autoHeroes.higher": "Выше",
+	"vcmi.autoHeroes.lower": "Ниже",
+	"vcmi.autoHeroes.runHint": "Автоход запускается в конце вашего хода",
+	"vcmi.autoHeroes.runNow": "Запустить автоход",
+	"vcmi.autoHeroes.runWarning": "Сохранить настройки и передать остаток текущего хода автогероям. После их действий ход игрока завершится.",
+	"vcmi.autoHeroes.saveShort": "Сохранить",
+	"vcmi.autoHeroes.cancelShort": "Отмена",
+	"vcmi.autoHeroes.foreignSlots": "Чужих слотов",
+	"vcmi.autoHeroes.foreignSlotsHelp": "Максимальное число слотов армии с существами чужих фракций.",
+	"vcmi.autoHeroes.foreignSlotsNone": "Нет",
+	"vcmi.autoHeroes.foreignSlotsUnlimited": "Без ограничений"
 }

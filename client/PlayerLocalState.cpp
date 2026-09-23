@@ -407,9 +407,12 @@ void PlayerLocalState::deserialize(const JsonNode & source)
 		if (!vstd::contains(oldHeroes, heroPtr))
 			continue;
 
-		// Replace any stale session entry for the same object id with state from the save.
-		AutoHeroes::eraseHeroConfig(heroPtr->id);
-		if(hero["autoHeroes"].isStruct())
+		// During AutoHeroes we temporarily replace the human interface with an AI and
+		// create a fresh PlayerLocalState when control returns. Keep the live runtime
+		// AutoHeroes config in that case: the server-side local-state packet may still
+		// contain the previous value. On a real game load CClient clears the runtime
+		// configs first, so saved settings are restored normally here.
+		if(!AutoHeroes::hasHeroConfig(heroPtr->id) && hero["autoHeroes"].isStruct())
 			AutoHeroes::writeHeroConfig(heroPtr->id, AutoHeroes::deserializeHeroConfig(hero["autoHeroes"]));
 
 		wanderingHeroes.push_back(heroPtr);
@@ -434,9 +437,8 @@ void PlayerLocalState::deserialize(const JsonNode & source)
 		spellbookSettings.spellbookLastTabAdvmap = SpellSchool(source["spellbook"]["tabAdvmap"].Integer());
 	}
 
-	// Heroes absent from stored local state are treated as new/manual heroes.
-	for(const auto * hero : oldHeroes)
-		AutoHeroes::eraseHeroConfig(hero->id);
+	// Do not erase live AutoHeroes configs for heroes absent from an older local-state
+	// snapshot. Newly hired heroes have no runtime config and therefore remain manual.
 
 	// append any owned heroes / towns that were not present in loaded state
 	wanderingHeroes.insert(wanderingHeroes.end(), oldHeroes.begin(), oldHeroes.end());

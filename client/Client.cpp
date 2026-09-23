@@ -437,8 +437,16 @@ bool CClient::startAutoHeroesPhase(PlayerColor color)
 	if(!hasEligibleHero)
 		return false;
 
-	const auto & playerSettings = *gameInfo().getPlayerSettings(color);
-	const std::string aiName = aiNameForPlayer(playerSettings, false, false);
+	// AutoHeroes filtering is implemented in Nullkiller2. Do not use aiNameForPlayer()
+	// here: its oneGoodAI optimisation can deliberately return EmptyAI when another
+	// AI/battle interface already exists, which makes the AutoHeroes phase end without
+	// moving a hero. Select Nullkiller2 explicitly for this short selective phase.
+	const std::string aiName = "Nullkiller2";
+	if(!AIFactory::isAvailableAdventureAI(aiName))
+	{
+		logGlobal->error("AutoHeroes requires %s, but that adventure AI is unavailable", aiName);
+		return false;
+	}
 	logGlobal->info("AutoHeroes phase for player %s will be handled by %s", color.toString(), aiName);
 
 	AutoHeroes::setPhasePlayer(color);

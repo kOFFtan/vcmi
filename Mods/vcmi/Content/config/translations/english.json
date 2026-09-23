@@ -1339,5 +1339,16 @@
 	"vcmi.autoHeroes.recruitAny": "Any faction",
 	"vcmi.autoHeroes.combatOff": "Do not fight",
 	"vcmi.autoHeroes.combatSafe": "Safe battles only",
-	"vcmi.autoHeroes.combatLosses": "Allow small losses"
+	"vcmi.autoHeroes.combatLosses": "Allow small losses",
+	"vcmi.autoHeroes.higher": "Higher",
+	"vcmi.autoHeroes.lower": "Lower",
+	"vcmi.autoHeroes.runHint": "AutoHeroes runs at the end of your manual turn",
+	"vcmi.autoHeroes.runNow": "Run AutoHeroes",
+	"vcmi.autoHeroes.runWarning": "Save settings and hand the remainder of this turn to AutoHeroes. Your player turn will end after they finish.",
+	"vcmi.autoHeroes.saveShort": "Save",
+	"vcmi.autoHeroes.cancelShort": "Cancel",
+	"vcmi.autoHeroes.foreignSlots": "Foreign slots",
+	"vcmi.autoHeroes.foreignSlotsHelp": "Maximum number of army slots that may contain creatures from foreign factions.",
+	"vcmi.autoHeroes.foreignSlotsNone": "None",
+	"vcmi.autoHeroes.foreignSlotsUnlimited": "Unlimited"
 }
