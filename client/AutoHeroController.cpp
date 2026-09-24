@@ -155,8 +155,9 @@ void AutoHeroController::onNewTurn()
 {
 	attemptedRecruitTowns.clear();
 
-	const int dayOfWeek = owner.cb ? owner.cb->getDate(Date::DAY_OF_WEEK) : -1;
-	if(dayOfWeek == 1)
+	const int currentDay = owner.cb ? owner.cb->getCalendar().getCurrentDay() : -1;
+	const bool firstDayOfWeek = currentDay > 0 && ((currentDay - 1) % 7 == 0);
+	if(firstDayOfWeek)
 	{
 		weeklyRecruitTowns.clear();
 		logGlobal->info("AutoHeroes v1.2: new week detected; cleared weekly town recruitment locks");
