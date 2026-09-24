@@ -1596,20 +1596,31 @@ void CPlayerInterface::showRecruitmentDialog(const CGDwelling *dwelling, const C
 		&& dst == autoHero && autoHeroController->allowsAction(AutoHeroes::Action::RECRUIT_CREATURES))
 	{
 		auto resources = cb->getResourceAmount();
-		resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - autoHeroController->goldReserve());
+		const int budgetPercent = autoHeroController->recruitmentBudgetPercent();
+		const int totalGold = resources[EGameResID::GOLD];
+		resources[EGameResID::GOLD] = static_cast<int>((static_cast<int64_t>(totalGold) * budgetPercent) / 100);
 		int recruitedTotal = 0;
 
-		for(int i = 0; i < static_cast<int>(dwelling->creatures.size()); ++i)
+		logGlobal->info("AutoHeroes v1.2: dwelling recruitment start hero=%s totalGold=%d budget=%d%% budgetGold=%d order=high-tier-first",
+			autoHero->getNameTextID(), totalGold, budgetPercent, resources[EGameResID::GOLD]);
+
+		for(int i = static_cast<int>(dwelling->creatures.size()) - 1; i >= 0; --i)
 		{
 			if(dwelling->creatures[i].first == 0 || dwelling->creatures[i].second.empty())
 				continue;
 
 			CreatureID creature = dwelling->creatures[i].second.back();
+			const auto * creatureType = creature.toCreature();
+			const int available = static_cast<int>(dwelling->creatures[i].first);
+			const int goldPerUnit = static_cast<int>(creatureType->getFullRecruitCost()[EGameResID::GOLD]);
 			if(autoHeroController->recruitmentScope() == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
-				&& creature.toCreature()->getFactionID() != autoHero->getFactionID())
+				&& creatureType->getFactionID() != autoHero->getFactionID())
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit dwelling level=%d creature=%d available=%d result=SKIP reason=faction_filter", i, creature.getNum(), available);
 				continue;
+			}
 
-			if(creature.toCreature()->getFactionID() != autoHero->getFactionID()
+			if(creatureType->getFactionID() != autoHero->getFactionID()
 				&& autoHeroController->maxForeignFactionSlots() >= 0
 				&& !dst->getSlotFor(creature).validSlot())
 			{
@@ -1618,22 +1629,41 @@ void CPlayerInterface::showRecruitmentDialog(const CGDwelling *dwelling, const C
 					if(stack.second->getType() && stack.second->getCreature()->getFactionID() != autoHero->getFactionID())
 						++foreignSlots;
 				if(foreignSlots >= autoHeroController->maxForeignFactionSlots())
+				{
+					logGlobal->info("AutoHeroes v1.2 recruit dwelling level=%d creature=%d available=%d result=SKIP reason=foreign_slot_limit", i, creature.getNum(), available);
 					continue;
+				}
 			}
 
 			if(!dst->getSlotFor(creature).validSlot())
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit dwelling level=%d creature=%d available=%d result=SKIP reason=army_slots", i, creature.getNum(), available);
 				continue;
+			}
 
-			int count = std::min<int>(dwelling->creatures[i].first, creature.toCreature()->maxAmount(resources));
+			if(goldPerUnit > 0 && resources[EGameResID::GOLD] < goldPerUnit)
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit dwelling level=%d creature=%d available=%d goldPerUnit=%d budgetGoldRemaining=%d result=SKIP reason=gold_budget",
+					i, creature.getNum(), available, goldPerUnit, resources[EGameResID::GOLD]);
+				continue;
+			}
+
+			int count = std::min<int>(available, creatureType->maxAmount(resources));
 			if(count <= 0)
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit dwelling level=%d creature=%d available=%d result=SKIP reason=other_resources", i, creature.getNum(), available);
 				continue;
+			}
 
+			const int goldCost = goldPerUnit * count;
 			cb->recruitCreatures(dwelling, dst, creature, count, i);
-			resources -= creature.toCreature()->getFullRecruitCost() * count;
+			resources -= creatureType->getFullRecruitCost() * count;
 			recruitedTotal += count;
+			logGlobal->info("AutoHeroes v1.2 recruit dwelling level=%d creature=%d available=%d count=%d goldCost=%d budgetGoldRemaining=%d result=BUY",
+				i, creature.getNum(), available, count, goldCost, resources[EGameResID::GOLD]);
 		}
 
-		logGlobal->info("AutoHeroes v1.0: automatically recruited %d creatures from dwelling", recruitedTotal);
+		logGlobal->info("AutoHeroes v1.2: automatically recruited %d creatures from dwelling", recruitedTotal);
 		cb->selectionMade(0, queryID);
 		return;
 	}

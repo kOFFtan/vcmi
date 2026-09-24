@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <optional>
 #include <set>
+#include <utility>
 #include <vector>
 
 class CPlayerInterface;
@@ -25,6 +26,7 @@ namespace AutoHeroes
 enum class Action;
 enum class DecisionPolicy;
 enum class RecruitmentScope;
+enum class RecruitmentBudget;
 struct HeroConfig;
 
 }
@@ -49,6 +51,7 @@ class AutoHeroController
 	int movementStartPoints = -1;
 	int stepsForCurrentHero = 0;
 	std::set<ObjectInstanceID> attemptedRecruitTowns;
+	std::set<std::pair<int, int>> weeklyRecruitTowns;
 
 	const CGHeroInstance * activeHero() const;
 	void process();
@@ -60,6 +63,8 @@ class AutoHeroController
 	std::optional<int3> findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findRecruitTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	bool dwellingHasUsefulRecruit(const CGDwelling * dwelling, const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	bool townRecruitLocked(const CGHeroInstance * hero, const CGTownInstance * town) const;
+	void lockTownRecruit(const CGHeroInstance * hero, const CGTownInstance * town);
 	int recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
 	std::optional<int3> findExploreTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findCaptureTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
@@ -80,7 +85,7 @@ public:
 	bool allowsSecondarySkillLearning() const;
 	bool allowsAction(AutoHeroes::Action action) const;
 	const CGHeroInstance * currentHero() const;
-	int goldReserve() const;
+	int recruitmentBudgetPercent() const;
 	AutoHeroes::RecruitmentScope recruitmentScope() const;
 	int maxForeignFactionSlots() const;
 	bool shouldAutoFight(const CGHeroInstance * hero) const;

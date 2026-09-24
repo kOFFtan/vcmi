@@ -65,7 +65,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 94, 720, 246), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 172), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 
-	std::string title = tr("vcmi.autoHeroes.title") + " v1.1: " + GAME->translator().translate(hero->getNameTextID());
+	std::string title = tr("vcmi.autoHeroes.title") + " v1.2: " + GAME->translator().translate(hero->getNameTextID());
 	keep(std::make_shared<CLabel>(WIN_W / 2, 24, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 700));
 
 	auto enabled = keep(std::make_shared<CToggleButton>(
@@ -180,6 +180,20 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	}));
 	updateSkillLearningButton();
 
+	keep(std::make_shared<CLabel>(530, 432, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitBudget")));
+	recruitmentBudgetButton = keep(std::make_shared<CButton>(Point(530, 452), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitBudgetHelp")), [this]()
+	{
+		switch(draft.recruitmentBudget)
+		{
+		case AutoHeroes::RecruitmentBudget::PERCENT_100: draft.recruitmentBudget = AutoHeroes::RecruitmentBudget::PERCENT_75; break;
+		case AutoHeroes::RecruitmentBudget::PERCENT_75: draft.recruitmentBudget = AutoHeroes::RecruitmentBudget::PERCENT_50; break;
+		case AutoHeroes::RecruitmentBudget::PERCENT_50: draft.recruitmentBudget = AutoHeroes::RecruitmentBudget::PERCENT_25; break;
+		case AutoHeroes::RecruitmentBudget::PERCENT_25: draft.recruitmentBudget = AutoHeroes::RecruitmentBudget::PERCENT_100; break;
+		}
+		updateRecruitmentBudgetButton();
+	}));
+	updateRecruitmentBudgetButton();
+
 	keep(std::make_shared<CLabel>(30, 500, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 700));
 
 	auto run = keep(std::make_shared<CButton>(Point(30, 552), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
@@ -256,6 +270,12 @@ void CAutoHeroWindow::updateForeignSlotsButton()
 	}
 
 	foreignSlotsButton->setTextOverlay(std::to_string(std::clamp(draft.maxForeignFactionSlots, 1, 7)), FONT_SMALL, Colors::YELLOW);
+}
+
+void CAutoHeroWindow::updateRecruitmentBudgetButton()
+{
+	const int percent = AutoHeroes::recruitmentBudgetPercent(draft.recruitmentBudget);
+	recruitmentBudgetButton->setTextOverlay(std::to_string(percent) + "%", FONT_SMALL, Colors::YELLOW);
 }
 
 void CAutoHeroWindow::updateCombatButton()

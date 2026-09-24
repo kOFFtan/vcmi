@@ -32,6 +32,14 @@ enum class RecruitmentScope
 	UNRESTRICTED
 };
 
+enum class RecruitmentBudget
+{
+	PERCENT_25 = 25,
+	PERCENT_50 = 50,
+	PERCENT_75 = 75,
+	PERCENT_100 = 100
+};
+
 enum class CombatPolicy
 {
 	DISABLED,
@@ -51,12 +59,14 @@ struct HeroConfig
 	std::set<Action> actions;
 	std::vector<Action> priority;
 	RecruitmentScope recruitmentScope = RecruitmentScope::HERO_FACTION_ONLY;
+	RecruitmentBudget recruitmentBudget = RecruitmentBudget::PERCENT_100;
 	/// -1 means unlimited. Otherwise valid range is 0..7.
 	int maxForeignFactionSlots = 0;
 	CombatPolicy combatPolicy = CombatPolicy::SAFE_ONLY;
 	DecisionPolicy decisionPolicy = DecisionPolicy::ASK_HUMAN;
 	/// If false, AutoHeroes must not intentionally visit map objects that teach secondary skills.
 	bool allowSecondarySkillLearning = false;
+	/// Legacy reserve kept for non-recruitment paid map objects. Recruitment uses recruitmentBudget.
 	int goldReserve = 10000;
 	/// 0 means unlimited.
 	int movementRadius = 0;
@@ -88,5 +98,6 @@ void clearRuntimePhase();
 
 std::string actionToString(Action action);
 Action actionFromString(const std::string & value);
+int recruitmentBudgetPercent(RecruitmentBudget budget);
 
 }

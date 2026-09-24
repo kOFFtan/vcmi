@@ -89,6 +89,19 @@ int HeroConfig::priorityOf(Action action) const
 	return static_cast<int>(std::distance(priority.begin(), it));
 }
 
+
+int recruitmentBudgetPercent(RecruitmentBudget budget)
+{
+	switch(budget)
+	{
+	case RecruitmentBudget::PERCENT_25: return 25;
+	case RecruitmentBudget::PERCENT_50: return 50;
+	case RecruitmentBudget::PERCENT_75: return 75;
+	case RecruitmentBudget::PERCENT_100: return 100;
+	}
+	return 100;
+}
+
 std::string actionToString(Action action)
 {
 	switch(action)
@@ -118,6 +131,7 @@ JsonNode serializeHeroConfig(const HeroConfig & config)
 	JsonNode node;
 	node["enabled"].Bool() = config.enabled;
 	node["goldReserve"].Integer() = std::max(0, config.goldReserve);
+	node["recruitmentBudgetPercent"].Integer() = recruitmentBudgetPercent(config.recruitmentBudget);
 	node["movementRadius"].Integer() = std::max(0, config.movementRadius);
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
@@ -151,6 +165,13 @@ HeroConfig deserializeHeroConfig(const JsonNode & node)
 
 	result.enabled = readBool(node, "enabled", false);
 	result.goldReserve = std::max(0, readInt(node, "goldReserve", 10000));
+	switch(readInt(node, "recruitmentBudgetPercent", 100))
+	{
+	case 25: result.recruitmentBudget = RecruitmentBudget::PERCENT_25; break;
+	case 50: result.recruitmentBudget = RecruitmentBudget::PERCENT_50; break;
+	case 75: result.recruitmentBudget = RecruitmentBudget::PERCENT_75; break;
+	default: result.recruitmentBudget = RecruitmentBudget::PERCENT_100; break;
+	}
 	result.movementRadius = std::max(0, readInt(node, "movementRadius", 0));
 	result.maxForeignFactionSlots = std::clamp(readInt(node, "maxForeignFactionSlots", 0), -1, 7);
 	result.allowSecondarySkillLearning = readBool(node, "allowSecondarySkillLearning", false);
@@ -223,6 +244,7 @@ void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
 	Settings node = ::settings.write["session"][SESSION_KEY][HEROES_KEY][std::to_string(heroId.getNum())];
 	node["enabled"].Bool() = config.enabled;
 	node["goldReserve"].Integer() = std::max(0, config.goldReserve);
+	node["recruitmentBudgetPercent"].Integer() = recruitmentBudgetPercent(config.recruitmentBudget);
 	node["movementRadius"].Integer() = std::max(0, config.movementRadius);
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";

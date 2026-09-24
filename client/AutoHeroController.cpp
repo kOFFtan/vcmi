@@ -154,7 +154,17 @@ AutoHeroController::AutoHeroController(CPlayerInterface & owner_)
 void AutoHeroController::onNewTurn()
 {
 	attemptedRecruitTowns.clear();
-	logGlobal->info("AutoHeroes v1.1: cleared per-turn town recruitment attempts");
+
+	const int dayOfWeek = owner.cb ? owner.cb->getDate(Date::DAY_OF_WEEK) : -1;
+	if(dayOfWeek == 1)
+	{
+		weeklyRecruitTowns.clear();
+		logGlobal->info("AutoHeroes v1.2: new week detected; cleared weekly town recruitment locks");
+	}
+	else
+	{
+		logGlobal->info("AutoHeroes v1.2: cleared per-turn town recruitment attempts; weekly locks=%d", static_cast<int>(weeklyRecruitTowns.size()));
+	}
 }
 
 const CGHeroInstance * AutoHeroController::activeHero() const
@@ -187,10 +197,10 @@ const CGHeroInstance * AutoHeroController::currentHero() const
 	return activeHero();
 }
 
-int AutoHeroController::goldReserve() const
+int AutoHeroController::recruitmentBudgetPercent() const
 {
 	const auto * hero = activeHero();
-	return hero ? AutoHeroes::readHeroConfig(hero->id).goldReserve : 0;
+	return hero ? AutoHeroes::recruitmentBudgetPercent(AutoHeroes::readHeroConfig(hero->id).recruitmentBudget) : 100;
 }
 
 AutoHeroes::RecruitmentScope AutoHeroController::recruitmentScope() const
@@ -340,7 +350,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		const int recruited = recruitFromCurrentTown(hero, config);
 		if(recruited > 0)
 		{
-			logGlobal->info("AutoHeroes v1.1: recruited %d creatures from town for hero %s", recruited, hero->getNameTextID());
+			logGlobal->info("AutoHeroes v1.2: recruited %d creatures from town for hero %s", recruited, hero->getNameTextID());
 			owner.closeAllDialogs();
 		}
 	}
@@ -464,7 +474,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		if(destination)
 		{
 			activeAction = action;
-			logGlobal->info("AutoHeroes v1.1: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
+			logGlobal->info("AutoHeroes v1.2: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
 			if(startMovement(hero, *destination, allowDestinationBattle))
 				return true;
 			activeAction.reset();
@@ -624,15 +634,18 @@ bool AutoHeroController::dwellingHasUsefulRecruit(const CGDwelling * dwelling, c
 		return false;
 
 	auto resources = owner.cb->getResourceAmount();
-	resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - config.goldReserve);
+	const int budgetPercent = AutoHeroes::recruitmentBudgetPercent(config.recruitmentBudget);
+	const int currentGold = resources[EGameResID::GOLD];
+	resources[EGameResID::GOLD] = static_cast<int>((static_cast<int64_t>(currentGold) * budgetPercent) / 100);
 
 	int foreignSlots = 0;
 	for(const auto & stack : hero->Slots())
 		if(stack.second->getType() && stack.second->getCreature()->getFactionID() != hero->getFactionID())
 			++foreignSlots;
 
-	for(const auto & level : dwelling->creatures)
+	for(auto levelIt = dwelling->creatures.rbegin(); levelIt != dwelling->creatures.rend(); ++levelIt)
 	{
+		const auto & level = *levelIt;
 		if(level.first == 0 || level.second.empty())
 			continue;
 
@@ -666,6 +679,21 @@ bool AutoHeroController::dwellingHasUsefulRecruit(const CGDwelling * dwelling, c
 	return false;
 }
 
+bool AutoHeroController::townRecruitLocked(const CGHeroInstance * hero, const CGTownInstance * town) const
+{
+	return hero && town && weeklyRecruitTowns.count({hero->id.getNum(), town->id.getNum()}) != 0;
+}
+
+void AutoHeroController::lockTownRecruit(const CGHeroInstance * hero, const CGTownInstance * town)
+{
+	if(!hero || !town)
+		return;
+
+	weeklyRecruitTowns.emplace(hero->id.getNum(), town->id.getNum());
+	logGlobal->info("AutoHeroes v1.2: weekly recruit lock set hero=%s town=%s",
+		hero->getNameTextID(), town->visitablePos().toString());
+}
+
 int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config)
 {
 	if(!hero || !owner.cb)
@@ -680,35 +708,59 @@ int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, cons
 		const auto * town = dynamic_cast<const CGTownInstance *>(object);
 		if(!town || town->getOwner() != *player)
 			continue;
+		if(townRecruitLocked(hero, town))
+		{
+			logGlobal->info("AutoHeroes v1.2: town recruitment skipped hero=%s town=%s reason=weekly_lock",
+				hero->getNameTextID(), town->visitablePos().toString());
+			return 0;
+		}
 		if(attemptedRecruitTowns.count(town->id))
 			return 0;
 
 		attemptedRecruitTowns.insert(town->id);
 		if(town->getVisitingHero() != hero && town->getGarrisonHero() != hero)
 		{
-			logGlobal->warn("AutoHeroes v1.1: hero %s reached town %s but is not registered as visiting/garrison hero; town recruitment skipped", hero->getNameTextID(), town->visitablePos().toString());
+			logGlobal->warn("AutoHeroes v1.2: hero %s reached town %s but is not registered as visiting/garrison hero; town recruitment skipped",
+				hero->getNameTextID(), town->visitablePos().toString());
 			return 0;
 		}
 
 		auto resources = owner.cb->getResourceAmount();
-		resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - config.goldReserve);
+		const int budgetPercent = AutoHeroes::recruitmentBudgetPercent(config.recruitmentBudget);
+		const int totalGold = resources[EGameResID::GOLD];
+		const int budgetGold = static_cast<int>((static_cast<int64_t>(totalGold) * budgetPercent) / 100);
+		resources[EGameResID::GOLD] = budgetGold;
 		int recruitedTotal = 0;
 		int foreignSlots = 0;
 		for(const auto & stack : hero->Slots())
 			if(stack.second->getType() && stack.second->getCreature()->getFactionID() != hero->getFactionID())
 				++foreignSlots;
 
-		for(int levelIndex = 0; levelIndex < static_cast<int>(town->creatures.size()); ++levelIndex)
+		logGlobal->info("AutoHeroes v1.2: town recruitment start hero=%s town=%s totalGold=%d budget=%d%% budgetGold=%d order=high-tier-first",
+			hero->getNameTextID(), town->visitablePos().toString(), totalGold, budgetPercent, budgetGold);
+
+		for(int levelIndex = static_cast<int>(town->creatures.size()) - 1; levelIndex >= 0; --levelIndex)
 		{
 			const auto & level = town->creatures[levelIndex];
 			if(level.first == 0 || level.second.empty())
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d available=%d result=SKIP reason=empty",
+					town->visitablePos().toString(), levelIndex, static_cast<int>(level.first));
 				continue;
+			}
 
 			const CreatureID creature = level.second.back();
 			const auto * creatureType = creature.toCreature();
+			const int available = static_cast<int>(level.first);
+			const int goldPerUnit = static_cast<int>(creatureType->getFullRecruitCost()[EGameResID::GOLD]);
+
 			if(config.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
 				&& creatureType->getFactionID() != hero->getFactionID())
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d creature=%d available=%d goldPerUnit=%d result=SKIP reason=faction_filter",
+					town->visitablePos().toString(), levelIndex, creature.getNum(), available, goldPerUnit);
 				continue;
+			}
 
 			bool alreadyHasCreature = false;
 			for(const auto & stack : hero->Slots())
@@ -722,22 +774,50 @@ int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, cons
 				&& config.maxForeignFactionSlots >= 0
 				&& !alreadyHasCreature
 				&& foreignSlots >= config.maxForeignFactionSlots)
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d creature=%d available=%d goldPerUnit=%d result=SKIP reason=foreign_slot_limit",
+					town->visitablePos().toString(), levelIndex, creature.getNum(), available, goldPerUnit);
 				continue;
+			}
 			if(!hero->getSlotFor(creature).validSlot())
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d creature=%d available=%d goldPerUnit=%d result=SKIP reason=army_slots",
+					town->visitablePos().toString(), levelIndex, creature.getNum(), available, goldPerUnit);
 				continue;
+			}
 
-			const int count = std::min<int>(level.first, creatureType->maxAmount(resources));
+			if(goldPerUnit > 0 && resources[EGameResID::GOLD] < goldPerUnit)
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d creature=%d available=%d goldPerUnit=%d budgetGoldRemaining=%d result=SKIP reason=gold_budget",
+					town->visitablePos().toString(), levelIndex, creature.getNum(), available, goldPerUnit, resources[EGameResID::GOLD]);
+				continue;
+			}
+
+			const int affordable = creatureType->maxAmount(resources);
+			const int count = std::min<int>(available, affordable);
 			if(count <= 0)
+			{
+				logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d creature=%d available=%d goldPerUnit=%d budgetGoldRemaining=%d result=SKIP reason=other_resources",
+					town->visitablePos().toString(), levelIndex, creature.getNum(), available, goldPerUnit, resources[EGameResID::GOLD]);
 				continue;
+			}
 
+			const int goldCost = goldPerUnit * count;
 			owner.cb->recruitCreatures(town, hero, creature, count, levelIndex);
 			resources -= creatureType->getFullRecruitCost() * count;
 			recruitedTotal += count;
 			if(creatureType->getFactionID() != hero->getFactionID() && !alreadyHasCreature)
 				++foreignSlots;
+
+			logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d creature=%d available=%d count=%d goldCost=%d budgetGoldRemaining=%d result=BUY",
+				town->visitablePos().toString(), levelIndex, creature.getNum(), available, count, goldCost, resources[EGameResID::GOLD]);
 		}
 
-		logGlobal->info("AutoHeroes v1.1: town recruitment attempt at %s finished, recruited=%d", town->visitablePos().toString(), recruitedTotal);
+		if(recruitedTotal > 0)
+			lockTownRecruit(hero, town);
+
+		logGlobal->info("AutoHeroes v1.2: town recruitment attempt at %s finished, recruited=%d budgetGoldRemaining=%d",
+			town->visitablePos().toString(), recruitedTotal, resources[EGameResID::GOLD]);
 		return recruitedTotal;
 	}
 
@@ -771,7 +851,7 @@ std::optional<int3> AutoHeroController::findRecruitTarget(const CGHeroInstance *
 
 					if(town)
 					{
-						if(town->getOwner() != *player || attemptedRecruitTowns.count(town->id))
+						if(town->getOwner() != *player || attemptedRecruitTowns.count(town->id) || townRecruitLocked(hero, town))
 							continue;
 						if(!dwellingHasUsefulRecruit(town, hero, config))
 							continue;
@@ -865,7 +945,10 @@ std::optional<int3> AutoHeroController::findFightTarget(const CGHeroInstance * h
 	if(!paths)
 		return std::nullopt;
 
-	const double requiredRatio = config.combatPolicy == AutoHeroes::CombatPolicy::SAFE_ONLY ? 2.0 : 1.35;
+	// Match VCMI's long-standing conservative adventure-AI baseline more closely.
+	// The detailed candidate log below lets the next test distinguish strength,
+	// radius and path-safety rejection without handing the whole player to NK2.
+	const double requiredRatio = config.combatPolicy == AutoHeroes::CombatPolicy::SAFE_ONLY ? 1.50 : 1.15;
 	const double heroStrength = static_cast<double>(std::max<ui64>(1, hero->estimateHeroCombatValue()));
 	const int3 mapSize = owner.cb->getMapSize();
 	std::optional<int3> best;
@@ -879,6 +962,7 @@ std::optional<int3> AutoHeroController::findFightTarget(const CGHeroInstance * h
 				const int3 tile(x, y, z);
 				if(!owner.cb->isVisible(tile))
 					continue;
+
 				for(const auto * object : owner.cb->getVisitableObjs(tile))
 				{
 					if(!object || object->ID != Obj::MONSTER)
@@ -886,18 +970,40 @@ std::optional<int3> AutoHeroController::findFightTarget(const CGHeroInstance * h
 					const auto * army = dynamic_cast<const CArmedInstance *>(object);
 					if(!army)
 						continue;
-					const double enemyStrength = static_cast<double>(std::max<ui64>(1, army->estimateCombatValue()));
-					if(heroStrength / enemyStrength < requiredRatio)
-						continue;
 
 					const int3 destination = object->visitablePos();
-					if(!withinConfiguredRadius(hero, config, destination))
-						continue;
+					const double enemyStrength = static_cast<double>(std::max<ui64>(1, army->estimateCombatValue()));
+					const double ratio = heroStrength / enemyStrength;
+					const bool ratioOk = ratio >= requiredRatio;
+					const bool withinRadius = withinConfiguredRadius(hero, config, destination);
 					const CGPathNode * node = paths->getPathInfo(destination);
-					if(!node || !node->reachable())
-						continue;
+					const bool reachable = node && node->reachable();
 					CGPath path;
-					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, true))
+					const bool pathFound = reachable && paths->getPath(path, destination, EPathfindingLayer::AUTO);
+					const bool pathSafe = pathFound && pathIsSafeForMvp(hero, path, destination, true);
+
+					const char * reason = "accepted";
+					if(!ratioOk)
+						reason = "strength_ratio";
+					else if(!withinRadius)
+						reason = "radius";
+					else if(!node)
+						reason = "no_path_node";
+					else if(!reachable)
+						reason = "unreachable";
+					else if(!pathFound)
+						reason = "path_not_found";
+					else if(!pathSafe)
+						reason = "path_unsafe";
+
+					const bool accepted = ratioOk && withinRadius && reachable && pathFound && pathSafe;
+					logGlobal->info(
+						"AutoHeroes v1.2 combat candidate hero=%s coord=%s heroStrength=%.0f enemyStrength=%.0f ratio=%.3f required=%.2f visible=1 withinRadius=%d reachable=%d pathFound=%d pathSafe=%d result=%s reason=%s",
+						hero->getNameTextID(), destination.toString(), heroStrength, enemyStrength, ratio, requiredRatio,
+						withinRadius ? 1 : 0, reachable ? 1 : 0, pathFound ? 1 : 0, pathSafe ? 1 : 0,
+						accepted ? "ACCEPT" : "REJECT", reason);
+
+					if(!accepted)
 						continue;
 
 					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
@@ -908,6 +1014,11 @@ std::optional<int3> AutoHeroController::findFightTarget(const CGHeroInstance * h
 					}
 				}
 			}
+
+	if(best)
+		logGlobal->info("AutoHeroes v1.2 combat selected hero=%s target=%s", hero->getNameTextID(), best->toString());
+	else
+		logGlobal->info("AutoHeroes v1.2 combat: no acceptable neutral target for hero=%s", hero->getNameTextID());
 
 	return best;
 }
