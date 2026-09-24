@@ -1,0 +1,343 @@
+diff --git a/Mods/vcmi/Content/config/translations/english.json b/Mods/vcmi/Content/config/translations/english.json
+index a22b306..626c209 100644
+--- a/Mods/vcmi/Content/config/translations/english.json
++++ b/Mods/vcmi/Content/config/translations/english.json
+@@ -31,6 +31,10 @@
+ 	"vcmi.autoHeroes.skillLearningHelp": "Allow or block intentional visits to objects that can teach secondary skills.",
+ 	"vcmi.autoHeroes.skillLearningAllow": "Allow",
+ 	"vcmi.autoHeroes.skillLearningBlock": "Block",
++	"vcmi.autoHeroes.treasureChest": "Treasure chests",
++	"vcmi.autoHeroes.treasureChestHelp": "Choose the automatic reward for treasure chests and similar two-choice collectible rewards.",
++	"vcmi.autoHeroes.treasureChestGold": "Take gold",
++	"vcmi.autoHeroes.treasureChestExperience": "Take experience",
+ 	"vcmi.autoHeroes.infoAuto": "Run now starts enabled AutoHeroes without ending your turn. Normal End Turn lets them act first, then ends the turn.",
+ 	"vcmi.autoHeroes.runWarning": "Save settings and run enabled AutoHeroes now.",
+ 	"vcmi.autoHeroes.runNow": "Run AutoHeroes",
+diff --git a/Mods/vcmi/Content/config/translations/russian.json b/Mods/vcmi/Content/config/translations/russian.json
+index 29c31e0..d83c0f9 100644
+--- a/Mods/vcmi/Content/config/translations/russian.json
++++ b/Mods/vcmi/Content/config/translations/russian.json
+@@ -31,6 +31,10 @@
+ 	"vcmi.autoHeroes.skillLearningHelp": "Разрешить или запретить намеренное посещение объектов, которые могут обучить вторичному навыку.",
+ 	"vcmi.autoHeroes.skillLearningAllow": "Разрешить",
+ 	"vcmi.autoHeroes.skillLearningBlock": "Запретить",
++	"vcmi.autoHeroes.treasureChest": "Сундуки",
++	"vcmi.autoHeroes.treasureChestHelp": "Выберите автоматическую награду для сундуков и похожих собираемых объектов с выбором из двух наград.",
++	"vcmi.autoHeroes.treasureChestGold": "Брать золото",
++	"vcmi.autoHeroes.treasureChestExperience": "Брать опыт",
+ 	"vcmi.autoHeroes.infoAuto": "«Запустить автогероев» выполняет действия без завершения вашего хода. Обычная кнопка конца хода сначала запускает автогероев, затем завершает ход.",
+ 	"vcmi.autoHeroes.runWarning": "Сохранить настройки и запустить включённых автогероев сейчас.",
+ 	"vcmi.autoHeroes.runNow": "Запустить автогероев",
+diff --git a/client/AutoHeroController.cpp b/client/AutoHeroController.cpp
+index 28d014d..ad04e13 100644
+--- a/client/AutoHeroController.cpp
++++ b/client/AutoHeroController.cpp
+@@ -39,6 +39,7 @@ bool isMvpCollectTarget(const CGObjectInstance * target)
+ 	case Obj::FLOTSAM:
+ 	case Obj::LEAN_TO:
+ 	case Obj::MYSTICAL_GARDEN:
++	case Obj::TREASURE_CHEST:
+ 	case Obj::SEA_CHEST:
+ 	case Obj::WATER_WHEEL:
+ 	case Obj::WINDMILL:
+@@ -181,6 +182,17 @@ AutoHeroes::DecisionPolicy AutoHeroController::decisionPolicy() const
+ 	return hero ? AutoHeroes::readHeroConfig(hero->id).decisionPolicy : AutoHeroes::DecisionPolicy::ASK_HUMAN;
+ }
+ 
++AutoHeroes::TreasureChestChoice AutoHeroController::treasureChestChoice() const
++{
++	const auto * hero = activeHero();
++	return hero ? AutoHeroes::readHeroConfig(hero->id).treasureChestChoice : AutoHeroes::TreasureChestChoice::GOLD;
++}
++
++bool AutoHeroController::isTreasureChestInteraction() const
++{
++	return running && activeAction && *activeAction == AutoHeroes::Action::COLLECT_RESOURCES && activeCollectTreasureChest;
++}
++
+ bool AutoHeroController::allowsSecondarySkillLearning() const
+ {
+ 	const auto * hero = activeHero();
+@@ -293,6 +305,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
+ 	activeHeroId.reset();
+ 	stepsForCurrentHero = 0;
+ 	activeAction.reset();
++	activeCollectTreasureChest = false;
+ 	logGlobal->info("AutoHeroes v1.0: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
+ 	process();
+ 	return true;
+@@ -312,6 +325,7 @@ void AutoHeroController::cancel()
+ 	activeHeroId.reset();
+ 	stepsForCurrentHero = 0;
+ 	activeAction.reset();
++	activeCollectTreasureChest = false;
+ }
+ 
+ void AutoHeroController::update()
+@@ -376,6 +390,7 @@ void AutoHeroController::finishRun()
+ 	heroQueue.clear();
+ 	heroQueueIndex = 0;
+ 	activeHeroId.reset();
++	activeCollectTreasureChest = false;
+ 	stepsForCurrentHero = 0;
+ 
+ 	logGlobal->info("AutoHeroes v0.8: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
+@@ -386,6 +401,7 @@ void AutoHeroController::advanceHero()
+ {
+ 	activeHeroId.reset();
+ 	activeAction.reset();
++	activeCollectTreasureChest = false;
+ 	stepsForCurrentHero = 0;
+ 	++heroQueueIndex;
+ }
+@@ -475,10 +491,23 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
+ 		if(destination)
+ 		{
+ 			activeAction = action;
+-			logGlobal->info("AutoHeroes v1.2: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
++			activeCollectTreasureChest = false;
++			if(action == AutoHeroes::Action::COLLECT_RESOURCES)
++			{
++				for(const auto * object : owner.cb->getVisitableObjs(*destination))
++				{
++					if(object && (object->ID == Obj::TREASURE_CHEST || object->ID == Obj::SEA_CHEST))
++					{
++						activeCollectTreasureChest = true;
++						break;
++					}
++				}
++			}
++			logGlobal->info("AutoHeroes v1.3: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
+ 			if(startMovement(hero, *destination, allowDestinationBattle))
+ 				return true;
+ 			activeAction.reset();
++			activeCollectTreasureChest = false;
+ 		}
+ 	}
+ 
+@@ -532,6 +561,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
+ 
+ 	const int3 mapSize = owner.cb->getMapSize();
+ 	std::optional<int3> best;
++	int bestTurns = std::numeric_limits<int>::max();
+ 	float bestCost = std::numeric_limits<float>::max();
+ 
+ 	for(int z = 0; z < mapSize.z; ++z)
+@@ -558,7 +588,9 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
+ 						continue;
+ 
+ 					const CGPathNode * node = paths->getPathInfo(destination);
+-					if(!node || !node->reachable() || node->turns != 0 || node->cost >= bestCost)
++					if(!node || !node->reachable())
++						continue;
++					if(node->turns > bestTurns || (node->turns == bestTurns && node->cost >= bestCost))
+ 						continue;
+ 
+ 					CGPath path;
+@@ -566,6 +598,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
+ 						continue;
+ 
+ 					best = destination;
++					bestTurns = node->turns;
+ 					bestCost = node->cost;
+ 				}
+ 			}
+diff --git a/client/AutoHeroController.h b/client/AutoHeroController.h
+index bde20a3..5df3f49 100644
+--- a/client/AutoHeroController.h
++++ b/client/AutoHeroController.h
+@@ -25,6 +25,7 @@ namespace AutoHeroes
+ 
+ enum class Action;
+ enum class DecisionPolicy;
++enum class TreasureChestChoice;
+ enum class RecruitmentScope;
+ enum class RecruitmentBudget;
+ struct HeroConfig;
+@@ -47,6 +48,7 @@ class AutoHeroController
+ 	size_t heroQueueIndex = 0;
+ 	std::optional<ObjectInstanceID> activeHeroId;
+ 	std::optional<AutoHeroes::Action> activeAction;
++	bool activeCollectTreasureChest = false;
+ 	int3 movementStartPosition = int3(-1, -1, -1);
+ 	int movementStartPoints = -1;
+ 	int stepsForCurrentHero = 0;
+@@ -82,6 +84,8 @@ public:
+ 	void onDialogResolved();
+ 	bool isRunning() const { return running; }
+ 	AutoHeroes::DecisionPolicy decisionPolicy() const;
++	AutoHeroes::TreasureChestChoice treasureChestChoice() const;
++	bool isTreasureChestInteraction() const;
+ 	bool allowsSecondarySkillLearning() const;
+ 	bool allowsAction(AutoHeroes::Action action) const;
+ 	const CGHeroInstance * currentHero() const;
+diff --git a/client/CPlayerInterface.cpp b/client/CPlayerInterface.cpp
+index 236f8bd..75909b7 100644
+--- a/client/CPlayerInterface.cpp
++++ b/client/CPlayerInterface.cpp
+@@ -1211,6 +1211,18 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
+ {
+ 	EVENT_HANDLER_CALLED_BY_CLIENT;
+ 
++	if(autoHeroController && autoHeroController->isRunning()
++		&& autoHeroController->isTreasureChestInteraction()
++		&& selection && components.size() == 2)
++	{
++		const bool takeExperience = autoHeroController->treasureChestChoice() == AutoHeroes::TreasureChestChoice::EXPERIENCE;
++		const int option = takeExperience ? 1 : 0;
++		logGlobal->info("AutoHeroes v1.3: automatically choosing treasure reward=%s option=%d",
++			takeExperience ? "experience" : "gold", option);
++		cb->selectionMade(option, askID);
++		return;
++	}
++
+ 	if(autoHeroController && autoHeroController->isRunning()
+ 		&& autoHeroController->decisionPolicy() == AutoHeroes::DecisionPolicy::AUTO_ACCEPT)
+ 	{
+diff --git a/client/windows/CAutoHeroWindow.cpp b/client/windows/CAutoHeroWindow.cpp
+index f4011c3..b019a8d 100644
+--- a/client/windows/CAutoHeroWindow.cpp
++++ b/client/windows/CAutoHeroWindow.cpp
+@@ -42,7 +42,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	OBJECT_CONSTRUCTION;
+ 
+ 	constexpr int WIN_W = 760;
+-	constexpr int WIN_H = 610;
++	constexpr int WIN_H = 680;
+ 
+ 	pos = Rect(pos.x, pos.y, WIN_W, WIN_H);
+ 	updateShadow();
+@@ -63,9 +63,9 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	// black quest text boxes which overlapped the AutoHeroes controls on Android.
+ 	keep(std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK"), Rect(0, 0, WIN_W, WIN_H)));
+ 	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 94, 720, 246), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+-	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 172), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
++	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 242), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+ 
+-	std::string title = tr("vcmi.autoHeroes.title") + " v1.2: " + GAME->translator().translate(hero->getNameTextID());
++	std::string title = tr("vcmi.autoHeroes.title") + " v1.3: " + GAME->translator().translate(hero->getNameTextID());
+ 	keep(std::make_shared<CLabel>(WIN_W / 2, 24, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 700));
+ 
+ 	auto enabled = keep(std::make_shared<CToggleButton>(
+@@ -194,15 +194,25 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	}));
+ 	updateRecruitmentBudgetButton();
+ 
+-	keep(std::make_shared<CLabel>(30, 500, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 700));
++	keep(std::make_shared<CLabel>(30, 500, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.treasureChest")));
++	treasureChestButton = keep(std::make_shared<CButton>(Point(30, 520), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.treasureChestHelp")), [this]()
++	{
++		draft.treasureChestChoice = draft.treasureChestChoice == AutoHeroes::TreasureChestChoice::GOLD
++			? AutoHeroes::TreasureChestChoice::EXPERIENCE
++			: AutoHeroes::TreasureChestChoice::GOLD;
++		updateTreasureChestButton();
++	}));
++	updateTreasureChestButton();
++
++	keep(std::make_shared<CLabel>(250, 526, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 480));
+ 
+-	auto run = keep(std::make_shared<CButton>(Point(30, 552), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
++	auto run = keep(std::make_shared<CButton>(Point(30, 622), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
+ 	run->setTextOverlay(tr("vcmi.autoHeroes.runNow"), FONT_SMALL, Colors::YELLOW);
+ 
+-	auto cancel = keep(std::make_shared<CButton>(Point(500, 552), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
++	auto cancel = keep(std::make_shared<CButton>(Point(500, 622), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
+ 	cancel->setTextOverlay(tr("vcmi.autoHeroes.cancelShort"), FONT_SMALL, Colors::YELLOW);
+ 
+-	auto save = keep(std::make_shared<CButton>(Point(590, 552), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
++	auto save = keep(std::make_shared<CButton>(Point(590, 622), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
+ 	save->setTextOverlay(tr("vcmi.autoHeroes.saveShort"), FONT_SMALL, Colors::YELLOW);
+ }
+ 
+@@ -306,6 +316,14 @@ void CAutoHeroWindow::updateSkillLearningButton()
+ 	skillLearningButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
+ }
+ 
++void CAutoHeroWindow::updateTreasureChestButton()
++{
++	const std::string key = draft.treasureChestChoice == AutoHeroes::TreasureChestChoice::EXPERIENCE
++		? "vcmi.autoHeroes.treasureChestExperience"
++		: "vcmi.autoHeroes.treasureChestGold";
++	treasureChestButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
++}
++
+ void CAutoHeroWindow::persistSettings()
+ {
+ 	AutoHeroes::writeHeroConfig(hero->id, draft);
+diff --git a/client/windows/CAutoHeroWindow.h b/client/windows/CAutoHeroWindow.h
+index 2464bc4..280dfb5 100644
+--- a/client/windows/CAutoHeroWindow.h
++++ b/client/windows/CAutoHeroWindow.h
+@@ -26,6 +26,7 @@ class CAutoHeroWindow : public CWindowObject
+ 	std::shared_ptr<CButton> combatButton;
+ 	std::shared_ptr<CButton> decisionButton;
+ 	std::shared_ptr<CButton> skillLearningButton;
++	std::shared_ptr<CButton> treasureChestButton;
+ 
+ 	void updatePriorityLabels();
+ 	void movePriority(AutoHeroes::Action action, int delta);
+@@ -35,6 +36,7 @@ class CAutoHeroWindow : public CWindowObject
+ 	void updateCombatButton();
+ 	void updateDecisionButton();
+ 	void updateSkillLearningButton();
++	void updateTreasureChestButton();
+ 	void persistSettings();
+ 	void saveAndClose();
+ 	void saveAndRun();
+diff --git a/lib/autoheroes/AutoHeroConfig.cpp b/lib/autoheroes/AutoHeroConfig.cpp
+index bf22342..cb8c557 100644
+--- a/lib/autoheroes/AutoHeroConfig.cpp
++++ b/lib/autoheroes/AutoHeroConfig.cpp
+@@ -136,6 +136,7 @@ JsonNode serializeHeroConfig(const HeroConfig & config)
+ 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
+ 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
+ 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
++	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
+ 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
+ 
+ 	switch(config.combatPolicy)
+@@ -184,6 +185,11 @@ HeroConfig deserializeHeroConfig(const JsonNode & node)
+ 	const std::string decision = readString(node, "decisionPolicy", "askHuman");
+ 	result.decisionPolicy = decision == "autoAccept" ? DecisionPolicy::AUTO_ACCEPT : DecisionPolicy::ASK_HUMAN;
+ 
++	const std::string treasureChestChoice = readString(node, "treasureChestChoice", "gold");
++	result.treasureChestChoice = treasureChestChoice == "experience"
++		? TreasureChestChoice::EXPERIENCE
++		: TreasureChestChoice::GOLD;
++
+ 	const std::string combat = readString(node, "combatPolicy", "safeOnly");
+ 	if(combat == "disabled")
+ 		result.combatPolicy = CombatPolicy::DISABLED;
+@@ -249,6 +255,7 @@ void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
+ 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
+ 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
+ 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
++	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
+ 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
+ 
+ 	switch(config.combatPolicy)
+diff --git a/lib/autoheroes/AutoHeroConfig.h b/lib/autoheroes/AutoHeroConfig.h
+index 0fd025b..debf9e0 100644
+--- a/lib/autoheroes/AutoHeroConfig.h
++++ b/lib/autoheroes/AutoHeroConfig.h
+@@ -53,6 +53,12 @@ enum class DecisionPolicy
+ 	AUTO_ACCEPT
+ };
+ 
++enum class TreasureChestChoice
++{
++	GOLD,
++	EXPERIENCE
++};
++
+ struct HeroConfig
+ {
+ 	bool enabled = false;
+@@ -64,6 +70,7 @@ struct HeroConfig
+ 	int maxForeignFactionSlots = 0;
+ 	CombatPolicy combatPolicy = CombatPolicy::SAFE_ONLY;
+ 	DecisionPolicy decisionPolicy = DecisionPolicy::ASK_HUMAN;
++	TreasureChestChoice treasureChestChoice = TreasureChestChoice::GOLD;
+ 	/// If false, AutoHeroes must not intentionally visit map objects that teach secondary skills.
+ 	bool allowSecondarySkillLearning = false;
+ 	/// Legacy reserve kept for non-recruitment paid map objects. Recruitment uses recruitmentBudget.
