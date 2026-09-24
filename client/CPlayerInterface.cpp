@@ -906,6 +906,18 @@ void CPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult *
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 	const bool autoHeroBattle = autoHeroController && autoHeroController->isAutoBattleActive();
+	if(autoHeroBattle)
+	{
+		// battleEnd can arrive after the quick-combat interface has already been
+		// unregistered, so do not tie AutoHeroes resume to autofightingAI state.
+		// Resume on MainGUI after the server has emitted the battle-end event.
+		ENGINE->dispatchMainThread([this]()
+		{
+			if(autoHeroController)
+				autoHeroController->onBattleFinished();
+		});
+	}
+
 	if(isAutoFightOn || autofightingAI)
 	{
 		isAutoFightOn = false;
@@ -919,7 +931,6 @@ void CPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult *
 				if(queryID != QueryID::NONE)
 					cb->selectionMade(0, queryID);
 				isAutoFightEndBattle = false;
-				autoHeroController->onBattleFinished();
 				return;
 			}
 

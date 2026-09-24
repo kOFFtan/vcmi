@@ -111,16 +111,29 @@ bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLe
 	}
 }
 
+bool isEmptyNeutralTown(const CGObjectInstance * target)
+{
+	const auto * town = dynamic_cast<const CGTownInstance *>(target);
+	if(!town || town->getOwner() != PlayerColor::NEUTRAL)
+		return false;
+
+	if(town->getVisitingHero() || town->getGarrisonHero())
+		return false;
+
+	const auto * armedTown = dynamic_cast<const CArmedInstance *>(town);
+	return !armedTown || armedTown->Slots().empty();
+}
+
 bool isCaptureTarget(const CGObjectInstance * target, PlayerColor player)
 {
 	if(!target || target->ID == Obj::HERO)
 		return false;
 
-	// Town recruitment is handled separately, but a free neutral town is still
-	// a strategic capture target. Enemy-owned towns are intentionally left out
-	// until town-garrison danger evaluation is added.
+	// Town recruitment is handled separately. Only a genuinely empty neutral
+	// town is an automatic capture target; guarded/enemy towns need their own
+	// danger evaluation before they can be automated safely.
 	if(target->ID == Obj::TOWN)
-		return target->getOwner() == PlayerColor::NEUTRAL;
+		return isEmptyNeutralTown(target);
 
 	if(dynamic_cast<const IOwnableObject *>(target) == nullptr)
 		return false;
@@ -265,7 +278,7 @@ void AutoHeroController::onBattleStarted()
 	waitingForMovement = false;
 	battleCleanupTicks = 0;
 	battleCleanupTarget = activeBattleGuard;
-	logGlobal->info("AutoHeroes v1.5: battle started; automation paused until battle state is fully resolved");
+	logGlobal->info("AutoHeroes v1.6: battle started; automation paused until battle state is fully resolved");
 }
 
 void AutoHeroController::onBattleFinished()
@@ -278,7 +291,7 @@ void AutoHeroController::onBattleFinished()
 	waitingForDialog = false;
 	activeBattleGuard.reset();
 	battleCleanupTicks = 30;
-	logGlobal->info("AutoHeroes v1.5: battle finished; waiting for defeated neutral cleanup before resuming");
+	logGlobal->info("AutoHeroes v1.6: battle finished; waiting for defeated neutral cleanup before resuming");
 }
 
 void AutoHeroController::onDialogResolved()
@@ -331,6 +344,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
+	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = endTurnWhenFinished;
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -356,6 +370,7 @@ void AutoHeroController::cancel()
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
+	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	heroQueue.clear();
 	heroQueueIndex = 0;
@@ -396,7 +411,7 @@ void AutoHeroController::update()
 		battleCleanupTicks = 0;
 		battleCleanupTarget.reset();
 		owner.invalidatePaths();
-		logGlobal->info("AutoHeroes v1.5: post-battle state refreshed; resuming automation");
+		logGlobal->info("AutoHeroes v1.6: post-battle state refreshed; resuming automation");
 		return;
 	}
 
@@ -408,15 +423,29 @@ void AutoHeroController::update()
 			return;
 		}
 
-		waitingForTownUpgrade = false;
 		const CGHeroInstance * hero = activeHero();
 		if(!hero)
 		{
+			waitingForTownUpgrade = false;
+			mergeAfterTownUpgrade = false;
 			advanceHero();
 			process();
 			return;
 		}
 
+		if(mergeAfterTownUpgrade)
+		{
+			mergeAfterTownUpgrade = false;
+			const int mergeRequests = mergeDuplicateArmyStacks(hero);
+			if(mergeRequests > 0)
+			{
+				townUpgradeDelayTicks = 12;
+				logGlobal->info("AutoHeroes v1.6: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
+				return;
+			}
+		}
+
+		waitingForTownUpgrade = false;
 		recruitAfterTownUpgrades(hero);
 		if(owner.showingDialog->isBusy())
 		{
@@ -464,7 +493,18 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		{
 			waitingForTownUpgrade = true;
 			townUpgradeDelayTicks = 12;
-			logGlobal->info("AutoHeroes v1.5: requested %d army upgrades before town recruitment; waiting for server state", upgradeRequests);
+			mergeAfterTownUpgrade = true;
+			logGlobal->info("AutoHeroes v1.6: requested %d army upgrades before town recruitment; waiting to merge duplicate upgraded stacks", upgradeRequests);
+			return;
+		}
+
+		const int mergeRequests = mergeDuplicateArmyStacks(hero);
+		if(mergeRequests > 0)
+		{
+			waitingForTownUpgrade = true;
+			townUpgradeDelayTicks = 12;
+			mergeAfterTownUpgrade = false;
+			logGlobal->info("AutoHeroes v1.6: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
 			return;
 		}
 
@@ -492,6 +532,7 @@ void AutoHeroController::finishRun()
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
+	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	heroQueue.clear();
 	heroQueueIndex = 0;
@@ -513,6 +554,7 @@ void AutoHeroController::advanceHero()
 	activeCollectTreasureChest = false;
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
+	mergeAfterTownUpgrade = false;
 	stepsForCurrentHero = 0;
 	++heroQueueIndex;
 }
@@ -604,6 +646,21 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 
 		if(destination)
 		{
+			if(action == AutoHeroes::Action::CAPTURE_OBJECTS)
+			{
+				for(const auto * object : owner.cb->getVisitableObjs(*destination))
+				{
+					if(isEmptyNeutralTown(object))
+					{
+						// Pathfinder may mark entry into an unowned town as BATTLE even
+						// when the town has no defenders. Allow that final interaction
+						// only for a town that we already verified to be truly empty.
+						allowDestinationBattle = true;
+						break;
+					}
+				}
+			}
+
 			activeAction = action;
 			activeBattleGuard.reset();
 			activeCollectTreasureChest = false;
@@ -629,7 +686,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 			if(action == AutoHeroes::Action::FIGHT_NEUTRALS && allowedBattleGuard)
 				activeBattleGuard = allowedBattleGuard;
 
-			logGlobal->info("AutoHeroes v1.5: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
+			logGlobal->info("AutoHeroes v1.6: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
 			if(startMovement(hero, *destination, allowDestinationBattle, allowedBattleGuard))
 				return true;
 			activeAction.reset();
@@ -985,16 +1042,63 @@ int AutoHeroController::upgradeArmyInCurrentTown(const CGHeroInstance * hero)
 			if(!bestUpgrade)
 				continue;
 
-			owner.cb->upgradeCreature(hero, stackEntry.first, *bestUpgrade);
-			++requested;
-			logGlobal->info("AutoHeroes v1.5: town upgrade requested hero=%s fromCreature=%d toCreature=%d",
-				hero->getNameTextID(), stackEntry.second->getCreatureID().getNum(), bestUpgrade->getNum());
+			if(owner.cb->upgradeCreature(hero, stackEntry.first, *bestUpgrade))
+			{
+				++requested;
+				logGlobal->info("AutoHeroes v1.6: town upgrade requested hero=%s fromCreature=%d toCreature=%d",
+					hero->getNameTextID(), stackEntry.second->getCreatureID().getNum(), bestUpgrade->getNum());
+			}
+			else
+			{
+				logGlobal->info("AutoHeroes v1.6: town upgrade rejected hero=%s fromCreature=%d toCreature=%d",
+					hero->getNameTextID(), stackEntry.second->getCreatureID().getNum(), bestUpgrade->getNum());
+			}
 		}
 
 		return requested;
 	}
 
 	return 0;
+}
+
+
+int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
+{
+	if(!hero || !owner.cb)
+		return 0;
+
+	std::vector<std::pair<CreatureID, SlotID>> canonicalStacks;
+	int requested = 0;
+
+	for(const auto & stackEntry : hero->Slots())
+	{
+		if(!stackEntry.second || !stackEntry.second->getCreature())
+			continue;
+
+		const CreatureID creature = stackEntry.second->getCreatureID();
+		std::optional<SlotID> destinationSlot;
+		for(const auto & canonical : canonicalStacks)
+		{
+			if(canonical.first == creature)
+			{
+				destinationSlot = canonical.second;
+				break;
+			}
+		}
+
+		if(!destinationSlot)
+		{
+			canonicalStacks.emplace_back(creature, stackEntry.first);
+			continue;
+		}
+
+		owner.cb->mergeStacks(hero, hero, stackEntry.first, *destinationSlot);
+		++requested;
+		logGlobal->info("AutoHeroes v1.6: duplicate army stack merge requested hero=%s creature=%d",
+			hero->getNameTextID(), creature.getNum());
+	}
+
+	return requested;
 }
 
 void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
@@ -1006,7 +1110,7 @@ void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 	const int recruited = recruitFromCurrentTown(hero, config);
 	if(recruited > 0)
 	{
-		logGlobal->info("AutoHeroes v1.5: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
+		logGlobal->info("AutoHeroes v1.6: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
 		owner.closeAllDialogs();
 	}
 }
@@ -1228,17 +1332,53 @@ std::optional<int3> AutoHeroController::findCaptureTarget(const CGHeroInstance *
 				{
 					if(!isCaptureTarget(object, *player))
 						continue;
-					const int3 destination = object->visitablePos();
-					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
-						continue;
-					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
-						continue;
 
+					const int3 destination = object->visitablePos();
+					const bool emptyNeutralTown = isEmptyNeutralTown(object);
+					const bool samePosition = destination == hero->visitablePos();
+					const bool withinRadius = withinConfiguredRadius(hero, config, destination);
+					const int3 guardingCreature = owner.cb->guardingCreaturePosition(destination);
+					const bool externallyGuarded = guardingCreature != int3(-1, -1, -1);
 					const CGPathNode * node = paths->getPathInfo(destination);
-					if(!node || !node->reachable())
-						continue;
+					const bool reachable = node && node->reachable();
+
 					CGPath path;
-					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
+					const bool pathFound = reachable && paths->getPath(path, destination, EPathfindingLayer::AUTO);
+					// Empty neutral towns can have a destination node marked as BATTLE by
+					// pathfinding even though there is no army to fight. Permit only that
+					// final node; unrelated battles on the route remain forbidden.
+					const bool pathSafe = pathFound
+						&& pathIsSafeForMvp(hero, path, destination, emptyNeutralTown);
+
+					const bool accepted = !samePosition && withinRadius && !externallyGuarded
+						&& reachable && pathFound && pathSafe;
+
+					if(emptyNeutralTown)
+					{
+						const char * reason = "accepted";
+						if(samePosition)
+							reason = "same_position";
+						else if(!withinRadius)
+							reason = "radius";
+						else if(externallyGuarded)
+							reason = "external_guard";
+						else if(!node)
+							reason = "no_path_node";
+						else if(!reachable)
+							reason = "unreachable";
+						else if(!pathFound)
+							reason = "path_not_found";
+						else if(!pathSafe)
+							reason = "path_unsafe";
+
+						logGlobal->info(
+							"AutoHeroes v1.6 neutral town candidate coord=%s withinRadius=%d externalGuard=%d reachable=%d pathFound=%d pathSafe=%d result=%s reason=%s",
+							destination.toString(), withinRadius ? 1 : 0, externallyGuarded ? 1 : 0,
+							reachable ? 1 : 0, pathFound ? 1 : 0, pathSafe ? 1 : 0,
+							accepted ? "ACCEPT" : "REJECT", reason);
+					}
+
+					if(!accepted)
 						continue;
 
 					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))

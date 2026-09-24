@@ -48,6 +48,7 @@ class AutoHeroController
 	std::optional<int3> battleCleanupTarget;
 	bool waitingForTownUpgrade = false;
 	int townUpgradeDelayTicks = 0;
+	bool mergeAfterTownUpgrade = false;
 	bool endTurnAfterRun = false;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
@@ -74,6 +75,7 @@ class AutoHeroController
 	bool townRecruitLocked(const CGHeroInstance * hero, const CGTownInstance * town) const;
 	void lockTownRecruit(const CGHeroInstance * hero, const CGTownInstance * town);
 	int upgradeArmyInCurrentTown(const CGHeroInstance * hero);
+	int mergeDuplicateArmyStacks(const CGHeroInstance * hero);
 	void recruitAfterTownUpgrades(const CGHeroInstance * hero);
 	int recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
 	std::optional<int3> findExploreTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
