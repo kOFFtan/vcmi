@@ -738,6 +738,9 @@ void CPlayerInterface::buildChanged(const CGTownInstance *town, BuildingID build
 
 void CPlayerInterface::battleStartBefore(const BattleID & battleID, const CCreatureSet *army1, const CCreatureSet *army2, int3 tile, const CGHeroInstance *hero1, const CGHeroInstance *hero2)
 {
+	if(autoHeroController && (autoHeroController->shouldAutoFight(hero1) || autoHeroController->shouldAutoFight(hero2)))
+		autoHeroController->onBattleStarted();
+
 	movementController->onBattleStarted();
 
 	waitForAllDialogs();

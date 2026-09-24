@@ -43,11 +43,17 @@ class AutoHeroController
 	bool running = false;
 	bool waitingForMovement = false;
 	bool waitingForDialog = false;
+	bool waitingForBattle = false;
+	int battleCleanupTicks = 0;
+	std::optional<int3> battleCleanupTarget;
+	bool waitingForTownUpgrade = false;
+	int townUpgradeDelayTicks = 0;
 	bool endTurnAfterRun = false;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
 	std::optional<AutoHeroes::Action> activeAction;
+	std::optional<int3> activeBattleGuard;
 	bool activeCollectTreasureChest = false;
 	int3 movementStartPosition = int3(-1, -1, -1);
 	int movementStartPoints = -1;
@@ -60,18 +66,20 @@ class AutoHeroController
 	void finishRun();
 	void advanceHero();
 	bool startNextAction(const CGHeroInstance * hero);
-	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false);
+	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false, const std::optional<int3> & allowedBattleGuard = std::nullopt);
 	std::optional<int3> findCollectTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findRecruitTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	bool dwellingHasUsefulRecruit(const CGDwelling * dwelling, const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	bool townRecruitLocked(const CGHeroInstance * hero, const CGTownInstance * town) const;
 	void lockTownRecruit(const CGHeroInstance * hero, const CGTownInstance * town);
+	int upgradeArmyInCurrentTown(const CGHeroInstance * hero);
+	void recruitAfterTownUpgrades(const CGHeroInstance * hero);
 	int recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
 	std::optional<int3> findExploreTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findCaptureTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findFightTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
-	bool pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle) const;
+	bool pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard = std::nullopt) const;
 	bool withinConfiguredRadius(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config, const int3 & destination) const;
 
 public:
@@ -94,6 +102,7 @@ public:
 	int maxForeignFactionSlots() const;
 	bool shouldAutoFight(const CGHeroInstance * hero) const;
 	bool isAutoBattleActive() const;
+	void onBattleStarted();
 	void onBattleFinished();
 	void onNewTurn();
 };

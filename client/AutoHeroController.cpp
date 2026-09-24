@@ -236,7 +236,12 @@ int AutoHeroController::maxForeignFactionSlots() const
 
 bool AutoHeroController::shouldAutoFight(const CGHeroInstance * hero) const
 {
-	if(!running || !hero || !activeHeroId || hero->id != *activeHeroId || !activeAction || *activeAction != AutoHeroes::Action::FIGHT_NEUTRALS)
+	if(!running || !hero || !activeHeroId || hero->id != *activeHeroId || !activeAction)
+		return false;
+
+	const bool directNeutralFight = *activeAction == AutoHeroes::Action::FIGHT_NEUTRALS;
+	const bool guardedCollection = *activeAction == AutoHeroes::Action::COLLECT_RESOURCES && activeBattleGuard.has_value();
+	if(!directNeutralFight && !guardedCollection)
 		return false;
 
 	return AutoHeroes::readHeroConfig(hero->id).combatPolicy != AutoHeroes::CombatPolicy::DISABLED;
@@ -244,7 +249,23 @@ bool AutoHeroController::shouldAutoFight(const CGHeroInstance * hero) const
 
 bool AutoHeroController::isAutoBattleActive() const
 {
-	return running && activeAction && *activeAction == AutoHeroes::Action::FIGHT_NEUTRALS;
+	if(!running || !activeAction)
+		return false;
+
+	return *activeAction == AutoHeroes::Action::FIGHT_NEUTRALS
+		|| (*activeAction == AutoHeroes::Action::COLLECT_RESOURCES && activeBattleGuard.has_value());
+}
+
+void AutoHeroController::onBattleStarted()
+{
+	if(!running || !isAutoBattleActive())
+		return;
+
+	waitingForBattle = true;
+	waitingForMovement = false;
+	battleCleanupTicks = 0;
+	battleCleanupTarget = activeBattleGuard;
+	logGlobal->info("AutoHeroes v1.5: battle started; automation paused until battle state is fully resolved");
 }
 
 void AutoHeroController::onBattleFinished()
@@ -252,13 +273,12 @@ void AutoHeroController::onBattleFinished()
 	if(!running)
 		return;
 
+	waitingForBattle = false;
 	waitingForMovement = false;
 	waitingForDialog = false;
-	ENGINE->dispatchMainThread([this]()
-	{
-		if(running)
-			process();
-	});
+	activeBattleGuard.reset();
+	battleCleanupTicks = 30;
+	logGlobal->info("AutoHeroes v1.5: battle finished; waiting for defeated neutral cleanup before resuming");
 }
 
 void AutoHeroController::onDialogResolved()
@@ -306,11 +326,17 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	running = true;
 	waitingForMovement = false;
 	waitingForDialog = false;
+	waitingForBattle = false;
+	battleCleanupTicks = 0;
+	battleCleanupTarget.reset();
+	waitingForTownUpgrade = false;
+	townUpgradeDelayTicks = 0;
 	endTurnAfterRun = endTurnWhenFinished;
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
 	activeAction.reset();
+	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
 	logGlobal->info("AutoHeroes v1.0: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
 	process();
@@ -325,18 +351,84 @@ void AutoHeroController::cancel()
 	running = false;
 	waitingForMovement = false;
 	waitingForDialog = false;
+	waitingForBattle = false;
+	battleCleanupTicks = 0;
+	battleCleanupTarget.reset();
+	waitingForTownUpgrade = false;
+	townUpgradeDelayTicks = 0;
 	endTurnAfterRun = false;
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
 	activeAction.reset();
+	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
 }
 
 void AutoHeroController::update()
 {
-	if(!running || waitingForMovement)
+	if(!running)
+		return;
+
+	if(waitingForBattle)
+		return;
+
+	if(battleCleanupTicks > 0)
+	{
+		bool defeatedNeutralStillPresent = false;
+		if(battleCleanupTarget)
+		{
+			for(const auto * object : owner.cb->getVisitableObjs(*battleCleanupTarget))
+			{
+				if(object && object->ID == Obj::MONSTER)
+				{
+					defeatedNeutralStillPresent = true;
+					break;
+				}
+			}
+		}
+
+		--battleCleanupTicks;
+		if(defeatedNeutralStillPresent && battleCleanupTicks > 0)
+			return;
+
+		battleCleanupTicks = 0;
+		battleCleanupTarget.reset();
+		owner.invalidatePaths();
+		logGlobal->info("AutoHeroes v1.5: post-battle state refreshed; resuming automation");
+		return;
+	}
+
+	if(waitingForTownUpgrade)
+	{
+		if(townUpgradeDelayTicks > 0)
+		{
+			--townUpgradeDelayTicks;
+			return;
+		}
+
+		waitingForTownUpgrade = false;
+		const CGHeroInstance * hero = activeHero();
+		if(!hero)
+		{
+			advanceHero();
+			process();
+			return;
+		}
+
+		recruitAfterTownUpgrades(hero);
+		if(owner.showingDialog->isBusy())
+		{
+			waitingForDialog = true;
+			return;
+		}
+
+		process();
+		return;
+	}
+
+	if(waitingForMovement)
 		return;
 
 	if(waitingForDialog)
@@ -367,13 +459,16 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 
 	if(activeAction && *activeAction == AutoHeroes::Action::RECRUIT_CREATURES)
 	{
-		const auto config = AutoHeroes::readHeroConfig(hero->id);
-		const int recruited = recruitFromCurrentTown(hero, config);
-		if(recruited > 0)
+		const int upgradeRequests = upgradeArmyInCurrentTown(hero);
+		if(upgradeRequests > 0)
 		{
-			logGlobal->info("AutoHeroes v1.2: recruited %d creatures from town for hero %s", recruited, hero->getNameTextID());
-			owner.closeAllDialogs();
+			waitingForTownUpgrade = true;
+			townUpgradeDelayTicks = 12;
+			logGlobal->info("AutoHeroes v1.5: requested %d army upgrades before town recruitment; waiting for server state", upgradeRequests);
+			return;
 		}
+
+		recruitAfterTownUpgrades(hero);
 	}
 
 	if(owner.showingDialog->isBusy())
@@ -392,10 +487,17 @@ void AutoHeroController::finishRun()
 	running = false;
 	waitingForMovement = false;
 	waitingForDialog = false;
+	waitingForBattle = false;
+	battleCleanupTicks = 0;
+	battleCleanupTarget.reset();
+	waitingForTownUpgrade = false;
+	townUpgradeDelayTicks = 0;
 	endTurnAfterRun = false;
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
+	activeAction.reset();
+	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
 	stepsForCurrentHero = 0;
 
@@ -407,14 +509,17 @@ void AutoHeroController::advanceHero()
 {
 	activeHeroId.reset();
 	activeAction.reset();
+	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
+	waitingForTownUpgrade = false;
+	townUpgradeDelayTicks = 0;
 	stepsForCurrentHero = 0;
 	++heroQueueIndex;
 }
 
 void AutoHeroController::process()
 {
-	if(!running || waitingForMovement)
+	if(!running || waitingForMovement || waitingForBattle || battleCleanupTicks > 0 || waitingForTownUpgrade)
 		return;
 
 	if(!owner.makingTurn)
@@ -471,6 +576,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 
 		std::optional<int3> destination;
 		bool allowDestinationBattle = false;
+		std::optional<int3> allowedBattleGuard;
 		switch(action)
 		{
 		case AutoHeroes::Action::COLLECT_RESOURCES:
@@ -491,15 +597,26 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		case AutoHeroes::Action::FIGHT_NEUTRALS:
 			destination = findFightTarget(hero, config);
 			allowDestinationBattle = destination.has_value();
+			if(destination)
+				allowedBattleGuard = *destination;
 			break;
 		}
 
 		if(destination)
 		{
 			activeAction = action;
+			activeBattleGuard.reset();
 			activeCollectTreasureChest = false;
 			if(action == AutoHeroes::Action::COLLECT_RESOURCES)
 			{
+				const int3 guardingCreature = owner.cb->guardingCreaturePosition(*destination);
+				if(guardingCreature != int3(-1, -1, -1))
+				{
+					allowedBattleGuard = guardingCreature;
+					activeBattleGuard = guardingCreature;
+					allowDestinationBattle = true;
+				}
+
 				for(const auto * object : owner.cb->getVisitableObjs(*destination))
 				{
 					if(object && (object->ID == Obj::TREASURE_CHEST || object->ID == Obj::SEA_CHEST))
@@ -509,10 +626,14 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 					}
 				}
 			}
-			logGlobal->info("AutoHeroes v1.3: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
-			if(startMovement(hero, *destination, allowDestinationBattle))
+			if(action == AutoHeroes::Action::FIGHT_NEUTRALS && allowedBattleGuard)
+				activeBattleGuard = allowedBattleGuard;
+
+			logGlobal->info("AutoHeroes v1.5: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
+			if(startMovement(hero, *destination, allowDestinationBattle, allowedBattleGuard))
 				return true;
 			activeAction.reset();
+			activeBattleGuard.reset();
 			activeCollectTreasureChest = false;
 		}
 	}
@@ -520,7 +641,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	return false;
 }
 
-bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle)
+bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard)
 {
 	if(!hero || destination == hero->visitablePos())
 		return false;
@@ -533,7 +654,7 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 	if(!paths->getPath(path, destination, EPathfindingLayer::AUTO))
 		return false;
 
-	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination, allowDestinationBattle))
+	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination, allowDestinationBattle, allowedBattleGuard))
 		return false;
 
 	const CGPathNode * destinationNode = paths->getPathInfo(destination);
@@ -609,10 +730,49 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 						logResourceReject("outside_radius");
 						continue;
 					}
-					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+					std::optional<int3> allowedBattleGuard;
+					const int3 guardingCreature = owner.cb->guardingCreaturePosition(destination);
+					if(guardingCreature != int3(-1, -1, -1))
 					{
-						logResourceReject("guarded");
-						continue;
+						if(config.combatPolicy == AutoHeroes::CombatPolicy::DISABLED)
+						{
+							logResourceReject("guarded_combat_disabled");
+							continue;
+						}
+
+						const CArmedInstance * guardArmy = nullptr;
+						for(const auto * guardObject : owner.cb->getVisitableObjs(guardingCreature))
+						{
+							if(guardObject && guardObject->ID == Obj::MONSTER)
+							{
+								guardArmy = dynamic_cast<const CArmedInstance *>(guardObject);
+								if(guardArmy)
+									break;
+							}
+						}
+
+						if(!guardArmy)
+						{
+							logResourceReject("guarded_unknown_guard");
+							continue;
+						}
+
+						const double heroStrength = static_cast<double>(std::max<ui64>(1, hero->estimateHeroCombatValue()));
+						const double enemyStrength = static_cast<double>(std::max<ui64>(1, guardArmy->estimateCombatValue()));
+						const double requiredRatio = config.combatPolicy == AutoHeroes::CombatPolicy::SAFE_ONLY ? 1.50 : 1.15;
+						const double ratio = heroStrength / enemyStrength;
+						if(ratio < requiredRatio)
+						{
+							if(diagnoseResource)
+								logGlobal->info("AutoHeroes v1.5 guarded resource subtype=%s coord=%s guard=%s ratio=%.3f required=%.2f result=REJECT reason=guard_too_strong",
+									object->getSubtypeName(), destination.toString(), guardingCreature.toString(), ratio, requiredRatio);
+							continue;
+						}
+
+						allowedBattleGuard = guardingCreature;
+						if(diagnoseResource)
+							logGlobal->info("AutoHeroes v1.5 guarded resource subtype=%s coord=%s guard=%s ratio=%.3f required=%.2f result=ALLOW_BATTLE_ENTRY",
+								object->getSubtypeName(), destination.toString(), guardingCreature.toString(), ratio, requiredRatio);
 					}
 
 					const CGPathNode * node = paths->getPathInfo(destination);
@@ -638,7 +798,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 						logResourceReject("path_not_found");
 						continue;
 					}
-					if(!pathIsSafeForMvp(hero, path, destination, false))
+					if(!pathIsSafeForMvp(hero, path, destination, allowedBattleGuard.has_value(), allowedBattleGuard))
 					{
 						logResourceReject("path_unsafe");
 						continue;
@@ -777,6 +937,78 @@ void AutoHeroController::lockTownRecruit(const CGHeroInstance * hero, const CGTo
 	weeklyRecruitTowns.emplace(hero->id.getNum(), town->id.getNum());
 	logGlobal->info("AutoHeroes v1.2: weekly recruit lock set hero=%s town=%s",
 		hero->getNameTextID(), town->visitablePos().toString());
+}
+
+int AutoHeroController::upgradeArmyInCurrentTown(const CGHeroInstance * hero)
+{
+	if(!hero || !owner.cb)
+		return 0;
+
+	const auto player = owner.cb->getPlayerID();
+	if(!player)
+		return 0;
+
+	for(const auto * object : owner.cb->getVisitableObjs(hero->visitablePos()))
+	{
+		const auto * town = dynamic_cast<const CGTownInstance *>(object);
+		if(!town || town->getOwner() != *player)
+			continue;
+		if(town->getVisitingHero() != hero && town->getGarrisonHero() != hero)
+			return 0;
+
+		int requested = 0;
+		for(const auto & stackEntry : hero->Slots())
+		{
+			const auto * currentCreature = stackEntry.second->getCreature();
+			if(!currentCreature || !currentCreature->hasUpgrades())
+				continue;
+
+			std::optional<CreatureID> bestUpgrade;
+			int bestAIValue = -1;
+			for(const auto & level : town->creatures)
+			{
+				for(const CreatureID candidate : level.second)
+				{
+					const auto * candidateCreature = candidate.toCreature();
+					if(!candidateCreature || !currentCreature->isMyDirectUpgrade(candidateCreature))
+						continue;
+
+					const int aiValue = candidateCreature->getAIValue();
+					if(!bestUpgrade || aiValue > bestAIValue)
+					{
+						bestUpgrade = candidate;
+						bestAIValue = aiValue;
+					}
+				}
+			}
+
+			if(!bestUpgrade)
+				continue;
+
+			owner.cb->upgradeCreature(hero, stackEntry.first, *bestUpgrade);
+			++requested;
+			logGlobal->info("AutoHeroes v1.5: town upgrade requested hero=%s fromCreature=%d toCreature=%d",
+				hero->getNameTextID(), stackEntry.second->getCreatureID().getNum(), bestUpgrade->getNum());
+		}
+
+		return requested;
+	}
+
+	return 0;
+}
+
+void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
+{
+	if(!hero)
+		return;
+
+	const auto config = AutoHeroes::readHeroConfig(hero->id);
+	const int recruited = recruitFromCurrentTown(hero, config);
+	if(recruited > 0)
+	{
+		logGlobal->info("AutoHeroes v1.5: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
+		owner.closeAllDialogs();
+	}
 }
 
 int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config)
@@ -1065,7 +1297,7 @@ std::optional<int3> AutoHeroController::findFightTarget(const CGHeroInstance * h
 					const bool reachable = node && node->reachable();
 					CGPath path;
 					const bool pathFound = reachable && paths->getPath(path, destination, EPathfindingLayer::AUTO);
-					const bool pathSafe = pathFound && pathIsSafeForMvp(hero, path, destination, true);
+					const bool pathSafe = pathFound && pathIsSafeForMvp(hero, path, destination, true, std::optional<int3>{destination});
 
 					const char * reason = "accepted";
 					if(!ratioOk)
@@ -1180,7 +1412,7 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 	return best;
 }
 
-bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle) const
+bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard) const
 {
 	if(path.nodes.size() < 2)
 		return false;
@@ -1189,16 +1421,17 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
 	{
 		const bool isDestination = node.coord == destination;
 		const int3 guardingCreature = owner.cb->guardingCreaturePosition(node.coord);
-		const bool guardedByDestination = allowDestinationBattle && guardingCreature == destination;
-		const bool allowedCombatNode = allowDestinationBattle && (isDestination || guardedByDestination);
+		const bool isAllowedGuard = allowedBattleGuard && node.coord == *allowedBattleGuard;
+		const bool guardedByAllowedGuard = allowedBattleGuard && guardingCreature == *allowedBattleGuard;
+		const bool allowedCombatNode = allowDestinationBattle && (isDestination || isAllowedGuard || guardedByAllowedGuard);
 
 		if(isTeleportAction(node.action))
 			return false;
 
-		// When moving to a neutral stack VCMI may put BATTLE/GUARDED on the
-		// guarded approach tile, not on the monster tile itself. Permit that
-		// node only when the guard is exactly the neutral selected as destination.
-		// Any unrelated guarded/battle node on the route remains forbidden.
+		// VCMI can place BATTLE/GUARDED on an approach tile. For a direct
+		// neutral fight the allowed guard is the selected monster; for guarded
+		// collection it is the monster guarding the selected resource tile.
+		// Any unrelated battle on the route remains forbidden.
 		if(node.accessible == EPathAccessibility::GUARDED || isBattleAction(node.action))
 		{
 			if(!allowedCombatNode)
@@ -1209,7 +1442,7 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
 		{
 			if(node.action != EPathNodeAction::NORMAL && node.action != EPathNodeAction::UNKNOWN)
 			{
-				if(!(isBattleAction(node.action) && guardedByDestination))
+				if(!(isBattleAction(node.action) && (isAllowedGuard || guardedByAllowedGuard)))
 					return false;
 			}
 		}
