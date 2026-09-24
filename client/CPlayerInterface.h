@@ -85,6 +85,7 @@ class CPlayerInterface : public CGameInterface
 
 	std::unique_ptr<HeroMovementController> movementController;
 	std::unique_ptr<AutoHeroController> autoHeroController;
+	bool autoHeroesStartPending = false;
 	std::unique_ptr<PathfinderCache> pathfinderCache;
 public: // TODO: make private
 	std::unique_ptr<ArtifactsUIController> artifactController;

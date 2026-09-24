@@ -261,6 +261,7 @@ void CPlayerInterface::playerEndsTurn(PlayerColor player)
 	if (player == playerID)
 	{
 		autoHeroController->cancel();
+		autoHeroesStartPending = false;
 		makingTurn = false;
 		delayQueuedDialogsUntilInputSettles = false;
 		levelUpChainPendingContinuation = false;
@@ -405,6 +406,11 @@ void CPlayerInterface::acceptTurn(QueryID queryID, bool hotseatWait)
 	if (queryID.hasValue())
 		cb->selectionMade(0, queryID);
 	movementController->onPlayerTurnStarted();
+
+	// Enabled AutoHeroes are persistent. Schedule them automatically at the
+	// beginning of every human turn, after startup/hotseat dialogs have settled.
+	autoHeroesStartPending = true;
+	logGlobal->info("AutoHeroes v0.9: automatic start scheduled for player turn");
 }
 
 void CPlayerInterface::heroMoved(const TryMoveHero & details, bool verbose)
@@ -1688,6 +1694,21 @@ void CPlayerInterface::playerBlocked(int reason, bool start)
 void CPlayerInterface::update()
 {
 	tryShowNextPendingDialog();
+
+	if(autoHeroesStartPending
+		&& makingTurn
+		&& autoHeroController
+		&& !autoHeroController->isRunning()
+		&& !isHeroMoving()
+		&& !showingDialog->isBusy())
+	{
+		autoHeroesStartPending = false;
+		if(runAutoHeroesNow(false))
+			logGlobal->info("AutoHeroes v0.9: automatically started enabled heroes at beginning of turn");
+		else
+			logGlobal->info("AutoHeroes v0.9: no enabled hero with movement points at beginning of turn");
+	}
+
 	autoHeroController->update();
 }
 
