@@ -1,0 +1,730 @@
+diff --git a/client/AutoHeroController.cpp b/client/AutoHeroController.cpp
+index 8fefd98..70ffe5b 100644
+--- a/client/AutoHeroController.cpp
++++ b/client/AutoHeroController.cpp
+@@ -236,7 +236,12 @@ int AutoHeroController::maxForeignFactionSlots() const
+ 
+ bool AutoHeroController::shouldAutoFight(const CGHeroInstance * hero) const
+ {
+-	if(!running || !hero || !activeHeroId || hero->id != *activeHeroId || !activeAction || *activeAction != AutoHeroes::Action::FIGHT_NEUTRALS)
++	if(!running || !hero || !activeHeroId || hero->id != *activeHeroId || !activeAction)
++		return false;
++
++	const bool directNeutralFight = *activeAction == AutoHeroes::Action::FIGHT_NEUTRALS;
++	const bool guardedCollection = *activeAction == AutoHeroes::Action::COLLECT_RESOURCES && activeBattleGuard.has_value();
++	if(!directNeutralFight && !guardedCollection)
+ 		return false;
+ 
+ 	return AutoHeroes::readHeroConfig(hero->id).combatPolicy != AutoHeroes::CombatPolicy::DISABLED;
+@@ -244,7 +249,23 @@ bool AutoHeroController::shouldAutoFight(const CGHeroInstance * hero) const
+ 
+ bool AutoHeroController::isAutoBattleActive() const
+ {
+-	return running && activeAction && *activeAction == AutoHeroes::Action::FIGHT_NEUTRALS;
++	if(!running || !activeAction)
++		return false;
++
++	return *activeAction == AutoHeroes::Action::FIGHT_NEUTRALS
++		|| (*activeAction == AutoHeroes::Action::COLLECT_RESOURCES && activeBattleGuard.has_value());
++}
++
++void AutoHeroController::onBattleStarted()
++{
++	if(!running || !isAutoBattleActive())
++		return;
++
++	waitingForBattle = true;
++	waitingForMovement = false;
++	battleCleanupTicks = 0;
++	battleCleanupTarget = activeBattleGuard;
++	logGlobal->info("AutoHeroes v1.5: battle started; automation paused until battle state is fully resolved");
+ }
+ 
+ void AutoHeroController::onBattleFinished()
+@@ -252,13 +273,12 @@ void AutoHeroController::onBattleFinished()
+ 	if(!running)
+ 		return;
+ 
++	waitingForBattle = false;
+ 	waitingForMovement = false;
+ 	waitingForDialog = false;
+-	ENGINE->dispatchMainThread([this]()
+-	{
+-		if(running)
+-			process();
+-	});
++	activeBattleGuard.reset();
++	battleCleanupTicks = 30;
++	logGlobal->info("AutoHeroes v1.5: battle finished; waiting for defeated neutral cleanup before resuming");
+ }
+ 
+ void AutoHeroController::onDialogResolved()
+@@ -306,11 +326,17 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
+ 	running = true;
+ 	waitingForMovement = false;
+ 	waitingForDialog = false;
++	waitingForBattle = false;
++	battleCleanupTicks = 0;
++	battleCleanupTarget.reset();
++	waitingForTownUpgrade = false;
++	townUpgradeDelayTicks = 0;
+ 	endTurnAfterRun = endTurnWhenFinished;
+ 	heroQueueIndex = 0;
+ 	activeHeroId.reset();
+ 	stepsForCurrentHero = 0;
+ 	activeAction.reset();
++	activeBattleGuard.reset();
+ 	activeCollectTreasureChest = false;
+ 	logGlobal->info("AutoHeroes v1.0: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
+ 	process();
+@@ -325,18 +351,84 @@ void AutoHeroController::cancel()
+ 	running = false;
+ 	waitingForMovement = false;
+ 	waitingForDialog = false;
++	waitingForBattle = false;
++	battleCleanupTicks = 0;
++	battleCleanupTarget.reset();
++	waitingForTownUpgrade = false;
++	townUpgradeDelayTicks = 0;
+ 	endTurnAfterRun = false;
+ 	heroQueue.clear();
+ 	heroQueueIndex = 0;
+ 	activeHeroId.reset();
+ 	stepsForCurrentHero = 0;
+ 	activeAction.reset();
++	activeBattleGuard.reset();
+ 	activeCollectTreasureChest = false;
+ }
+ 
+ void AutoHeroController::update()
+ {
+-	if(!running || waitingForMovement)
++	if(!running)
++		return;
++
++	if(waitingForBattle)
++		return;
++
++	if(battleCleanupTicks > 0)
++	{
++		bool defeatedNeutralStillPresent = false;
++		if(battleCleanupTarget)
++		{
++			for(const auto * object : owner.cb->getVisitableObjs(*battleCleanupTarget))
++			{
++				if(object && object->ID == Obj::MONSTER)
++				{
++					defeatedNeutralStillPresent = true;
++					break;
++				}
++			}
++		}
++
++		--battleCleanupTicks;
++		if(defeatedNeutralStillPresent && battleCleanupTicks > 0)
++			return;
++
++		battleCleanupTicks = 0;
++		battleCleanupTarget.reset();
++		owner.invalidatePaths();
++		logGlobal->info("AutoHeroes v1.5: post-battle state refreshed; resuming automation");
++		return;
++	}
++
++	if(waitingForTownUpgrade)
++	{
++		if(townUpgradeDelayTicks > 0)
++		{
++			--townUpgradeDelayTicks;
++			return;
++		}
++
++		waitingForTownUpgrade = false;
++		const CGHeroInstance * hero = activeHero();
++		if(!hero)
++		{
++			advanceHero();
++			process();
++			return;
++		}
++
++		recruitAfterTownUpgrades(hero);
++		if(owner.showingDialog->isBusy())
++		{
++			waitingForDialog = true;
++			return;
++		}
++
++		process();
++		return;
++	}
++
++	if(waitingForMovement)
+ 		return;
+ 
+ 	if(waitingForDialog)
+@@ -367,13 +459,16 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
+ 
+ 	if(activeAction && *activeAction == AutoHeroes::Action::RECRUIT_CREATURES)
+ 	{
+-		const auto config = AutoHeroes::readHeroConfig(hero->id);
+-		const int recruited = recruitFromCurrentTown(hero, config);
+-		if(recruited > 0)
++		const int upgradeRequests = upgradeArmyInCurrentTown(hero);
++		if(upgradeRequests > 0)
+ 		{
+-			logGlobal->info("AutoHeroes v1.2: recruited %d creatures from town for hero %s", recruited, hero->getNameTextID());
+-			owner.closeAllDialogs();
++			waitingForTownUpgrade = true;
++			townUpgradeDelayTicks = 12;
++			logGlobal->info("AutoHeroes v1.5: requested %d army upgrades before town recruitment; waiting for server state", upgradeRequests);
++			return;
+ 		}
++
++		recruitAfterTownUpgrades(hero);
+ 	}
+ 
+ 	if(owner.showingDialog->isBusy())
+@@ -392,10 +487,17 @@ void AutoHeroController::finishRun()
+ 	running = false;
+ 	waitingForMovement = false;
+ 	waitingForDialog = false;
++	waitingForBattle = false;
++	battleCleanupTicks = 0;
++	battleCleanupTarget.reset();
++	waitingForTownUpgrade = false;
++	townUpgradeDelayTicks = 0;
+ 	endTurnAfterRun = false;
+ 	heroQueue.clear();
+ 	heroQueueIndex = 0;
+ 	activeHeroId.reset();
++	activeAction.reset();
++	activeBattleGuard.reset();
+ 	activeCollectTreasureChest = false;
+ 	stepsForCurrentHero = 0;
+ 
+@@ -407,14 +509,17 @@ void AutoHeroController::advanceHero()
+ {
+ 	activeHeroId.reset();
+ 	activeAction.reset();
++	activeBattleGuard.reset();
+ 	activeCollectTreasureChest = false;
++	waitingForTownUpgrade = false;
++	townUpgradeDelayTicks = 0;
+ 	stepsForCurrentHero = 0;
+ 	++heroQueueIndex;
+ }
+ 
+ void AutoHeroController::process()
+ {
+-	if(!running || waitingForMovement)
++	if(!running || waitingForMovement || waitingForBattle || battleCleanupTicks > 0 || waitingForTownUpgrade)
+ 		return;
+ 
+ 	if(!owner.makingTurn)
+@@ -471,6 +576,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
+ 
+ 		std::optional<int3> destination;
+ 		bool allowDestinationBattle = false;
++		std::optional<int3> allowedBattleGuard;
+ 		switch(action)
+ 		{
+ 		case AutoHeroes::Action::COLLECT_RESOURCES:
+@@ -491,15 +597,26 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
+ 		case AutoHeroes::Action::FIGHT_NEUTRALS:
+ 			destination = findFightTarget(hero, config);
+ 			allowDestinationBattle = destination.has_value();
++			if(destination)
++				allowedBattleGuard = *destination;
+ 			break;
+ 		}
+ 
+ 		if(destination)
+ 		{
+ 			activeAction = action;
++			activeBattleGuard.reset();
+ 			activeCollectTreasureChest = false;
+ 			if(action == AutoHeroes::Action::COLLECT_RESOURCES)
+ 			{
++				const int3 guardingCreature = owner.cb->guardingCreaturePosition(*destination);
++				if(guardingCreature != int3(-1, -1, -1))
++				{
++					allowedBattleGuard = guardingCreature;
++					activeBattleGuard = guardingCreature;
++					allowDestinationBattle = true;
++				}
++
+ 				for(const auto * object : owner.cb->getVisitableObjs(*destination))
+ 				{
+ 					if(object && (object->ID == Obj::TREASURE_CHEST || object->ID == Obj::SEA_CHEST))
+@@ -509,10 +626,14 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
+ 					}
+ 				}
+ 			}
+-			logGlobal->info("AutoHeroes v1.3: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
+-			if(startMovement(hero, *destination, allowDestinationBattle))
++			if(action == AutoHeroes::Action::FIGHT_NEUTRALS && allowedBattleGuard)
++				activeBattleGuard = allowedBattleGuard;
++
++			logGlobal->info("AutoHeroes v1.5: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
++			if(startMovement(hero, *destination, allowDestinationBattle, allowedBattleGuard))
+ 				return true;
+ 			activeAction.reset();
++			activeBattleGuard.reset();
+ 			activeCollectTreasureChest = false;
+ 		}
+ 	}
+@@ -520,7 +641,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
+ 	return false;
+ }
+ 
+-bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle)
++bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard)
+ {
+ 	if(!hero || destination == hero->visitablePos())
+ 		return false;
+@@ -533,7 +654,7 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
+ 	if(!paths->getPath(path, destination, EPathfindingLayer::AUTO))
+ 		return false;
+ 
+-	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination, allowDestinationBattle))
++	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination, allowDestinationBattle, allowedBattleGuard))
+ 		return false;
+ 
+ 	const CGPathNode * destinationNode = paths->getPathInfo(destination);
+@@ -609,10 +730,49 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
+ 						logResourceReject("outside_radius");
+ 						continue;
+ 					}
+-					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
++					std::optional<int3> allowedBattleGuard;
++					const int3 guardingCreature = owner.cb->guardingCreaturePosition(destination);
++					if(guardingCreature != int3(-1, -1, -1))
+ 					{
+-						logResourceReject("guarded");
+-						continue;
++						if(config.combatPolicy == AutoHeroes::CombatPolicy::DISABLED)
++						{
++							logResourceReject("guarded_combat_disabled");
++							continue;
++						}
++
++						const CArmedInstance * guardArmy = nullptr;
++						for(const auto * guardObject : owner.cb->getVisitableObjs(guardingCreature))
++						{
++							if(guardObject && guardObject->ID == Obj::MONSTER)
++							{
++								guardArmy = dynamic_cast<const CArmedInstance *>(guardObject);
++								if(guardArmy)
++									break;
++							}
++						}
++
++						if(!guardArmy)
++						{
++							logResourceReject("guarded_unknown_guard");
++							continue;
++						}
++
++						const double heroStrength = static_cast<double>(std::max<ui64>(1, hero->estimateHeroCombatValue()));
++						const double enemyStrength = static_cast<double>(std::max<ui64>(1, guardArmy->estimateCombatValue()));
++						const double requiredRatio = config.combatPolicy == AutoHeroes::CombatPolicy::SAFE_ONLY ? 1.50 : 1.15;
++						const double ratio = heroStrength / enemyStrength;
++						if(ratio < requiredRatio)
++						{
++							if(diagnoseResource)
++								logGlobal->info("AutoHeroes v1.5 guarded resource subtype=%s coord=%s guard=%s ratio=%.3f required=%.2f result=REJECT reason=guard_too_strong",
++									object->getSubtypeName(), destination.toString(), guardingCreature.toString(), ratio, requiredRatio);
++							continue;
++						}
++
++						allowedBattleGuard = guardingCreature;
++						if(diagnoseResource)
++							logGlobal->info("AutoHeroes v1.5 guarded resource subtype=%s coord=%s guard=%s ratio=%.3f required=%.2f result=ALLOW_BATTLE_ENTRY",
++								object->getSubtypeName(), destination.toString(), guardingCreature.toString(), ratio, requiredRatio);
+ 					}
+ 
+ 					const CGPathNode * node = paths->getPathInfo(destination);
+@@ -638,7 +798,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
+ 						logResourceReject("path_not_found");
+ 						continue;
+ 					}
+-					if(!pathIsSafeForMvp(hero, path, destination, false))
++					if(!pathIsSafeForMvp(hero, path, destination, allowedBattleGuard.has_value(), allowedBattleGuard))
+ 					{
+ 						logResourceReject("path_unsafe");
+ 						continue;
+@@ -779,6 +939,78 @@ void AutoHeroController::lockTownRecruit(const CGHeroInstance * hero, const CGTo
+ 		hero->getNameTextID(), town->visitablePos().toString());
+ }
+ 
++int AutoHeroController::upgradeArmyInCurrentTown(const CGHeroInstance * hero)
++{
++	if(!hero || !owner.cb)
++		return 0;
++
++	const auto player = owner.cb->getPlayerID();
++	if(!player)
++		return 0;
++
++	for(const auto * object : owner.cb->getVisitableObjs(hero->visitablePos()))
++	{
++		const auto * town = dynamic_cast<const CGTownInstance *>(object);
++		if(!town || town->getOwner() != *player)
++			continue;
++		if(town->getVisitingHero() != hero && town->getGarrisonHero() != hero)
++			return 0;
++
++		int requested = 0;
++		for(const auto & stackEntry : hero->Slots())
++		{
++			const auto * currentCreature = stackEntry.second->getCreature();
++			if(!currentCreature || !currentCreature->hasUpgrades())
++				continue;
++
++			std::optional<CreatureID> bestUpgrade;
++			int bestAIValue = -1;
++			for(const auto & level : town->creatures)
++			{
++				for(const CreatureID candidate : level.second)
++				{
++					const auto * candidateCreature = candidate.toCreature();
++					if(!candidateCreature || !currentCreature->isMyDirectUpgrade(candidateCreature))
++						continue;
++
++					const int aiValue = candidateCreature->getAIValue();
++					if(!bestUpgrade || aiValue > bestAIValue)
++					{
++						bestUpgrade = candidate;
++						bestAIValue = aiValue;
++					}
++				}
++			}
++
++			if(!bestUpgrade)
++				continue;
++
++			owner.cb->upgradeCreature(hero, stackEntry.first, *bestUpgrade);
++			++requested;
++			logGlobal->info("AutoHeroes v1.5: town upgrade requested hero=%s fromCreature=%d toCreature=%d",
++				hero->getNameTextID(), stackEntry.second->getCreatureID().getNum(), bestUpgrade->getNum());
++		}
++
++		return requested;
++	}
++
++	return 0;
++}
++
++void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
++{
++	if(!hero)
++		return;
++
++	const auto config = AutoHeroes::readHeroConfig(hero->id);
++	const int recruited = recruitFromCurrentTown(hero, config);
++	if(recruited > 0)
++	{
++		logGlobal->info("AutoHeroes v1.5: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
++		owner.closeAllDialogs();
++	}
++}
++
+ int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config)
+ {
+ 	if(!hero || !owner.cb)
+@@ -1065,7 +1297,7 @@ std::optional<int3> AutoHeroController::findFightTarget(const CGHeroInstance * h
+ 					const bool reachable = node && node->reachable();
+ 					CGPath path;
+ 					const bool pathFound = reachable && paths->getPath(path, destination, EPathfindingLayer::AUTO);
+-					const bool pathSafe = pathFound && pathIsSafeForMvp(hero, path, destination, true);
++					const bool pathSafe = pathFound && pathIsSafeForMvp(hero, path, destination, true, std::optional<int3>{destination});
+ 
+ 					const char * reason = "accepted";
+ 					if(!ratioOk)
+@@ -1180,7 +1412,7 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
+ 	return best;
+ }
+ 
+-bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle) const
++bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard) const
+ {
+ 	if(path.nodes.size() < 2)
+ 		return false;
+@@ -1189,16 +1421,17 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
+ 	{
+ 		const bool isDestination = node.coord == destination;
+ 		const int3 guardingCreature = owner.cb->guardingCreaturePosition(node.coord);
+-		const bool guardedByDestination = allowDestinationBattle && guardingCreature == destination;
+-		const bool allowedCombatNode = allowDestinationBattle && (isDestination || guardedByDestination);
++		const bool isAllowedGuard = allowedBattleGuard && node.coord == *allowedBattleGuard;
++		const bool guardedByAllowedGuard = allowedBattleGuard && guardingCreature == *allowedBattleGuard;
++		const bool allowedCombatNode = allowDestinationBattle && (isDestination || isAllowedGuard || guardedByAllowedGuard);
+ 
+ 		if(isTeleportAction(node.action))
+ 			return false;
+ 
+-		// When moving to a neutral stack VCMI may put BATTLE/GUARDED on the
+-		// guarded approach tile, not on the monster tile itself. Permit that
+-		// node only when the guard is exactly the neutral selected as destination.
+-		// Any unrelated guarded/battle node on the route remains forbidden.
++		// VCMI can place BATTLE/GUARDED on an approach tile. For a direct
++		// neutral fight the allowed guard is the selected monster; for guarded
++		// collection it is the monster guarding the selected resource tile.
++		// Any unrelated battle on the route remains forbidden.
+ 		if(node.accessible == EPathAccessibility::GUARDED || isBattleAction(node.action))
+ 		{
+ 			if(!allowedCombatNode)
+@@ -1209,7 +1442,7 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
+ 		{
+ 			if(node.action != EPathNodeAction::NORMAL && node.action != EPathNodeAction::UNKNOWN)
+ 			{
+-				if(!(isBattleAction(node.action) && guardedByDestination))
++				if(!(isBattleAction(node.action) && (isAllowedGuard || guardedByAllowedGuard)))
+ 					return false;
+ 			}
+ 		}
+diff --git a/client/AutoHeroController.h b/client/AutoHeroController.h
+index 5df3f49..41dd6a3 100644
+--- a/client/AutoHeroController.h
++++ b/client/AutoHeroController.h
+@@ -43,11 +43,17 @@ class AutoHeroController
+ 	bool running = false;
+ 	bool waitingForMovement = false;
+ 	bool waitingForDialog = false;
++	bool waitingForBattle = false;
++	int battleCleanupTicks = 0;
++	std::optional<int3> battleCleanupTarget;
++	bool waitingForTownUpgrade = false;
++	int townUpgradeDelayTicks = 0;
+ 	bool endTurnAfterRun = false;
+ 	std::vector<ObjectInstanceID> heroQueue;
+ 	size_t heroQueueIndex = 0;
+ 	std::optional<ObjectInstanceID> activeHeroId;
+ 	std::optional<AutoHeroes::Action> activeAction;
++	std::optional<int3> activeBattleGuard;
+ 	bool activeCollectTreasureChest = false;
+ 	int3 movementStartPosition = int3(-1, -1, -1);
+ 	int movementStartPoints = -1;
+@@ -60,18 +66,20 @@ class AutoHeroController
+ 	void finishRun();
+ 	void advanceHero();
+ 	bool startNextAction(const CGHeroInstance * hero);
+-	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false);
++	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false, const std::optional<int3> & allowedBattleGuard = std::nullopt);
+ 	std::optional<int3> findCollectTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+ 	std::optional<int3> findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+ 	std::optional<int3> findRecruitTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+ 	bool dwellingHasUsefulRecruit(const CGDwelling * dwelling, const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+ 	bool townRecruitLocked(const CGHeroInstance * hero, const CGTownInstance * town) const;
+ 	void lockTownRecruit(const CGHeroInstance * hero, const CGTownInstance * town);
++	int upgradeArmyInCurrentTown(const CGHeroInstance * hero);
++	void recruitAfterTownUpgrades(const CGHeroInstance * hero);
+ 	int recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
+ 	std::optional<int3> findExploreTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+ 	std::optional<int3> findCaptureTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+ 	std::optional<int3> findFightTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+-	bool pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle) const;
++	bool pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard = std::nullopt) const;
+ 	bool withinConfiguredRadius(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config, const int3 & destination) const;
+ 
+ public:
+@@ -94,6 +102,7 @@ public:
+ 	int maxForeignFactionSlots() const;
+ 	bool shouldAutoFight(const CGHeroInstance * hero) const;
+ 	bool isAutoBattleActive() const;
++	void onBattleStarted();
+ 	void onBattleFinished();
+ 	void onNewTurn();
+ };
+diff --git a/client/CPlayerInterface.cpp b/client/CPlayerInterface.cpp
+index ddeb4f5..a0143f4 100644
+--- a/client/CPlayerInterface.cpp
++++ b/client/CPlayerInterface.cpp
+@@ -738,6 +738,9 @@ void CPlayerInterface::buildChanged(const CGTownInstance *town, BuildingID build
+ 
+ void CPlayerInterface::battleStartBefore(const BattleID & battleID, const CCreatureSet *army1, const CCreatureSet *army2, int3 tile, const CGHeroInstance *hero1, const CGHeroInstance *hero2)
+ {
++	if(autoHeroController && (autoHeroController->shouldAutoFight(hero1) || autoHeroController->shouldAutoFight(hero2)))
++		autoHeroController->onBattleStarted();
++
+ 	movementController->onBattleStarted();
+ 
+ 	waitForAllDialogs();
+diff --git a/client/windows/CAutoHeroWindow.cpp b/client/windows/CAutoHeroWindow.cpp
+index 239f3e2..8e5c68c 100644
+--- a/client/windows/CAutoHeroWindow.cpp
++++ b/client/windows/CAutoHeroWindow.cpp
+@@ -41,8 +41,8 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ {
+ 	OBJECT_CONSTRUCTION;
+ 
+-	constexpr int WIN_W = 760;
+-	constexpr int WIN_H = 680;
++	constexpr int WIN_W = 700;
++	constexpr int WIN_H = 560;
+ 
+ 	pos = Rect(pos.x, pos.y, WIN_W, WIN_H);
+ 	updateShadow();
+@@ -62,34 +62,34 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	// Neutral tiled background instead of questDialog: that image contains baked-in
+ 	// black quest text boxes which overlapped the AutoHeroes controls on Android.
+ 	keep(std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK"), Rect(0, 0, WIN_W, WIN_H)));
+-	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 94, 720, 246), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+-	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 242), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
++	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 82, 668, 202), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
++	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 294, 668, 184), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+ 
+-	std::string title = tr("vcmi.autoHeroes.title") + " v1.4: " + GAME->translator().translate(hero->getNameTextID());
+-	keep(std::make_shared<CLabel>(WIN_W / 2, 24, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 700));
++	std::string title = tr("vcmi.autoHeroes.title") + " v1.5: " + GAME->translator().translate(hero->getNameTextID());
++	keep(std::make_shared<CLabel>(WIN_W / 2, 20, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 650));
+ 
+ 	auto enabled = keep(std::make_shared<CToggleButton>(
+-		Point(30, 50),
++		Point(24, 43),
+ 		AnimationPath::builtin("sysopchk.def"),
+ 		CButton::tooltip(tr("vcmi.autoHeroes.enabled")),
+ 		[this](bool selected){ draft.enabled = selected; }));
+ 	enabled->setSelectedSilent(draft.enabled);
+-	keep(std::make_shared<CLabel>(68, 57, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, tr("vcmi.autoHeroes.enabled")));
+-	keep(std::make_shared<CLabel>(735, 57, FONT_SMALL, ETextAlignment::TOPRIGHT, Colors::YELLOW, tr("vcmi.autoHeroes.runHint"), 520));
++	keep(std::make_shared<CLabel>(62, 50, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, tr("vcmi.autoHeroes.enabled")));
++	keep(std::make_shared<CLabel>(675, 50, FONT_SMALL, ETextAlignment::TOPRIGHT, Colors::YELLOW, tr("vcmi.autoHeroes.runHint"), 440));
+ 
+-	keep(std::make_shared<CLabel>(68, 108, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.actions")));
+-	keep(std::make_shared<CLabel>(515, 108, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.priority")));
+-	keep(std::make_shared<CLabel>(575, 108, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.higher"), 70));
+-	keep(std::make_shared<CLabel>(665, 108, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.lower"), 70));
++	keep(std::make_shared<CLabel>(62, 94, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.actions")));
++	keep(std::make_shared<CLabel>(450, 94, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.priority")));
++	keep(std::make_shared<CLabel>(520, 94, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.higher"), 70));
++	keep(std::make_shared<CLabel>(610, 94, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, tr("vcmi.autoHeroes.lower"), 70));
+ 
+ 	priorityLabels.reserve(ACTIONS.size());
+ 	for(size_t i = 0; i < ACTIONS.size(); ++i)
+ 	{
+ 		const auto action = ACTIONS[i];
+-		const int y = 138 + static_cast<int>(i) * 32;
++		const int y = 120 + static_cast<int>(i) * 27;
+ 
+ 		auto toggle = keep(std::make_shared<CToggleButton>(
+-			Point(30, y - 7),
++			Point(24, y - 7),
+ 			AnimationPath::builtin("sysopchk.def"),
+ 			CButton::tooltip(actionLabel(action)),
+ 			[this, action](bool selected)
+@@ -101,22 +101,22 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 			}));
+ 		toggle->setSelectedSilent(draft.actions.contains(action));
+ 
+-		keep(std::make_shared<CLabel>(68, y, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, actionLabel(action), 370));
++		keep(std::make_shared<CLabel>(62, y, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, actionLabel(action), 320));
+ 
+-		auto rank = std::make_shared<CLabel>(515, y, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, "", 36);
++		auto rank = std::make_shared<CLabel>(450, y, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, "", 36);
+ 		priorityLabels.push_back(rank);
+ 
+-		auto up = keep(std::make_shared<CButton>(Point(540, y - 11), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.moveUp")), [this, action](){ movePriority(action, -1); }));
++		auto up = keep(std::make_shared<CButton>(Point(480, y - 11), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.moveUp")), [this, action](){ movePriority(action, -1); }));
+ 		up->setTextOverlay(tr("vcmi.autoHeroes.higher"), FONT_SMALL, Colors::YELLOW);
+ 
+-		auto down = keep(std::make_shared<CButton>(Point(630, y - 11), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.moveDown")), [this, action](){ movePriority(action, +1); }));
++		auto down = keep(std::make_shared<CButton>(Point(570, y - 11), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.moveDown")), [this, action](){ movePriority(action, +1); }));
+ 		down->setTextOverlay(tr("vcmi.autoHeroes.lower"), FONT_SMALL, Colors::YELLOW);
+ 	}
+ 
+ 	updatePriorityLabels();
+ 
+-	keep(std::make_shared<CLabel>(30, 362, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitment")));
+-	recruitmentButton = keep(std::make_shared<CButton>(Point(30, 382), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitmentHelp")), [this]()
++	keep(std::make_shared<CLabel>(22, 306, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitment")));
++	recruitmentButton = keep(std::make_shared<CButton>(Point(22, 324), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitmentHelp")), [this]()
+ 	{
+ 		draft.recruitmentScope = draft.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
+ 			? AutoHeroes::RecruitmentScope::UNRESTRICTED
+@@ -130,8 +130,8 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	}));
+ 	updateRecruitmentButton();
+ 
+-	keep(std::make_shared<CLabel>(230, 362, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.foreignSlots")));
+-	foreignSlotsButton = keep(std::make_shared<CButton>(Point(230, 382), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.foreignSlotsHelp")), [this]()
++	keep(std::make_shared<CLabel>(250, 306, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.foreignSlots")));
++	foreignSlotsButton = keep(std::make_shared<CButton>(Point(250, 324), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.foreignSlotsHelp")), [this]()
+ 	{
+ 		if(draft.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY)
+ 			return;
+@@ -143,8 +143,8 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	}));
+ 	updateForeignSlotsButton();
+ 
+-	keep(std::make_shared<CLabel>(430, 362, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.combat")));
+-	combatButton = keep(std::make_shared<CButton>(Point(430, 382), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.combatHelp")), [this]()
++	keep(std::make_shared<CLabel>(478, 306, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.combat")));
++	combatButton = keep(std::make_shared<CButton>(Point(478, 324), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.combatHelp")), [this]()
+ 	{
+ 		switch(draft.combatPolicy)
+ 		{
+@@ -162,8 +162,8 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	}));
+ 	updateCombatButton();
+ 
+-	keep(std::make_shared<CLabel>(30, 432, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.decisions")));
+-	decisionButton = keep(std::make_shared<CButton>(Point(30, 452), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.decisionsHelp")), [this]()
++	keep(std::make_shared<CLabel>(22, 366, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.decisions")));
++	decisionButton = keep(std::make_shared<CButton>(Point(22, 384), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.decisionsHelp")), [this]()
+ 	{
+ 		draft.decisionPolicy = draft.decisionPolicy == AutoHeroes::DecisionPolicy::ASK_HUMAN
+ 			? AutoHeroes::DecisionPolicy::AUTO_ACCEPT
+@@ -172,16 +172,16 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	}));
+ 	updateDecisionButton();
+ 
+-	keep(std::make_shared<CLabel>(300, 432, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.skillLearning")));
+-	skillLearningButton = keep(std::make_shared<CButton>(Point(300, 452), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.skillLearningHelp")), [this]()
++	keep(std::make_shared<CLabel>(250, 366, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.skillLearning")));
++	skillLearningButton = keep(std::make_shared<CButton>(Point(250, 384), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.skillLearningHelp")), [this]()
+ 	{
+ 		draft.allowSecondarySkillLearning = !draft.allowSecondarySkillLearning;
+ 		updateSkillLearningButton();
+ 	}));
+ 	updateSkillLearningButton();
+ 
+-	keep(std::make_shared<CLabel>(530, 432, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitBudget")));
+-	recruitmentBudgetButton = keep(std::make_shared<CButton>(Point(530, 452), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitBudgetHelp")), [this]()
++	keep(std::make_shared<CLabel>(478, 366, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitBudget")));
++	recruitmentBudgetButton = keep(std::make_shared<CButton>(Point(478, 384), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitBudgetHelp")), [this]()
+ 	{
+ 		switch(draft.recruitmentBudget)
+ 		{
+@@ -194,8 +194,8 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	}));
+ 	updateRecruitmentBudgetButton();
+ 
+-	keep(std::make_shared<CLabel>(30, 500, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.treasureChest")));
+-	treasureChestButton = keep(std::make_shared<CButton>(Point(30, 520), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.treasureChestHelp")), [this]()
++	keep(std::make_shared<CLabel>(22, 426, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.treasureChest")));
++	treasureChestButton = keep(std::make_shared<CButton>(Point(22, 444), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.treasureChestHelp")), [this]()
+ 	{
+ 		draft.treasureChestChoice = draft.treasureChestChoice == AutoHeroes::TreasureChestChoice::GOLD
+ 			? AutoHeroes::TreasureChestChoice::EXPERIENCE
+@@ -204,15 +204,15 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	}));
+ 	updateTreasureChestButton();
+ 
+-	keep(std::make_shared<CLabel>(250, 526, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 480));
++	keep(std::make_shared<CLabel>(230, 450, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 440));
+ 
+-	auto run = keep(std::make_shared<CButton>(Point(30, 622), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
++	auto run = keep(std::make_shared<CButton>(Point(22, 510), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
+ 	run->setTextOverlay(tr("vcmi.autoHeroes.runNow"), FONT_SMALL, Colors::YELLOW);
+ 
+-	auto cancel = keep(std::make_shared<CButton>(Point(500, 622), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
++	auto cancel = keep(std::make_shared<CButton>(Point(500, 510), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
+ 	cancel->setTextOverlay(tr("vcmi.autoHeroes.cancelShort"), FONT_SMALL, Colors::YELLOW);
+ 
+-	auto save = keep(std::make_shared<CButton>(Point(590, 622), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
++	auto save = keep(std::make_shared<CButton>(Point(590, 510), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
+ 	save->setTextOverlay(tr("vcmi.autoHeroes.saveShort"), FONT_SMALL, Colors::YELLOW);
+ }
+ 
