@@ -8,6 +8,7 @@
 
 #include "CPlayerInterface.h"
 #include "PlayerLocalState.h"
+#include "GameEngine.h"
 
 #include "../lib/autoheroes/AutoHeroConfig.h"
 #include "../lib/ConditionalWait.h"
