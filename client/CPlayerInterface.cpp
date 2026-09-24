@@ -18,6 +18,9 @@
 #include "HeroMovementController.h"
 #include "PlayerLocalState.h"
 #include "../lib/autoheroes/AutoHeroConfig.h"
+#include "../lib/mapObjects/CGDwelling.h"
+#include "../lib/ResourceSet.h"
+#include "../lib/CCreatureHandler.h"
 
 #include "adventureMap/AdventureMapInterface.h"
 #include "adventureMap/AdventureMapShortcuts.h"
@@ -544,6 +547,16 @@ void CPlayerInterface::receivedResource()
 void CPlayerInterface::heroGotLevel(const CGHeroInstance *hero, PrimarySkill pskill, std::vector<SecondarySkill>& skills, QueryID queryID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->isRunning()
+		&& autoHeroController->decisionPolicy() == AutoHeroes::DecisionPolicy::AUTO_ACCEPT
+		&& queryID >= 0)
+	{
+		logGlobal->info("AutoHeroes v1.0: automatically accepting first hero level-up option");
+		cb->selectionMade(0, queryID);
+		return;
+	}
+
 	auto availableSkills = skills;
 
 	auto showLevelUpDialog = [this, hero, pskill, availableSkills = std::move(availableSkills), queryID]() mutable
@@ -735,8 +748,13 @@ void CPlayerInterface::battleStart(const BattleID & battleID, const CCreatureSet
 
 	bool useQuickCombat = settings["adventure"]["quickCombat"].Bool() || GAME->map().getMap()->battleOnly;
 	bool forceQuickCombat = settings["adventure"]["forceQuickCombat"].Bool();
+	const bool autoHeroCombat = autoHeroController
+		&& (autoHeroController->shouldAutoFight(hero1) || autoHeroController->shouldAutoFight(hero2));
 
-	if ((replayAllowed && useQuickCombat) || forceQuickCombat)
+	if(autoHeroCombat)
+		logGlobal->info("AutoHeroes v1.0: starting automatic quick combat for safe neutral battle");
+
+	if (autoHeroCombat || (replayAllowed && useQuickCombat) || forceQuickCombat)
 	{
 		prepareAutoFightingAI(battleID, army1, army2, tile, hero1, hero2, side);
 	}
@@ -883,6 +901,7 @@ void CPlayerInterface::activeStack(const BattleID & battleID, const CStack * sta
 void CPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult *br, QueryID queryID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+	const bool autoHeroBattle = autoHeroController && autoHeroController->isAutoBattleActive();
 	if(isAutoFightOn || autofightingAI)
 	{
 		isAutoFightOn = false;
@@ -890,6 +909,16 @@ void CPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult *
 		waitForAllDialogs();		//eagle eye skill can pop up multiple dialogs before the battle
 		if(!battleInt)
 		{
+			if(autoHeroBattle)
+			{
+				logGlobal->info("AutoHeroes v1.0: quick combat finished; accepting result and continuing automation");
+				if(queryID != QueryID::NONE)
+					cb->selectionMade(0, queryID);
+				isAutoFightEndBattle = false;
+				autoHeroController->onBattleFinished();
+				return;
+			}
+
 			bool allowManualReplay = queryID != QueryID::NONE && !isAutoFightEndBattle;
 
 			auto wnd = std::make_shared<BattleResultWindow>(*br, *this, allowManualReplay);
@@ -1560,6 +1589,54 @@ void CPlayerInterface::initializeHeroTownList()
 void CPlayerInterface::showRecruitmentDialog(const CGDwelling *dwelling, const CArmedInstance *dst, int level, QueryID queryID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	const CGHeroInstance * autoHero = autoHeroController ? autoHeroController->currentHero() : nullptr;
+	if(autoHeroController && autoHeroController->isRunning() && autoHero
+		&& dst == autoHero && autoHeroController->allowsAction(AutoHeroes::Action::RECRUIT_CREATURES))
+	{
+		auto resources = cb->getResourceAmount();
+		resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - autoHeroController->goldReserve());
+		int recruitedTotal = 0;
+
+		for(int i = 0; i < static_cast<int>(dwelling->creatures.size()); ++i)
+		{
+			if(dwelling->creatures[i].first == 0 || dwelling->creatures[i].second.empty())
+				continue;
+
+			CreatureID creature = dwelling->creatures[i].second.back();
+			if(autoHeroController->recruitmentScope() == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
+				&& creature.toCreature()->getFactionID() != autoHero->getFactionID())
+				continue;
+
+			if(creature.toCreature()->getFactionID() != autoHero->getFactionID()
+				&& autoHeroController->maxForeignFactionSlots() >= 0
+				&& !dst->getSlotFor(creature).validSlot())
+			{
+				int foreignSlots = 0;
+				for(const auto & stack : dst->Slots())
+					if(stack.second->getType() && stack.second->getCreature()->getFactionID() != autoHero->getFactionID())
+						++foreignSlots;
+				if(foreignSlots >= autoHeroController->maxForeignFactionSlots())
+					continue;
+			}
+
+			if(!dst->getSlotFor(creature).validSlot())
+				continue;
+
+			int count = std::min<int>(dwelling->creatures[i].first, creature.toCreature()->maxAmount(resources));
+			if(count <= 0)
+				continue;
+
+			cb->recruitCreatures(dwelling, dst, creature, count, i);
+			resources -= creature.toCreature()->getFullRecruitCost() * count;
+			recruitedTotal += count;
+		}
+
+		logGlobal->info("AutoHeroes v1.0: automatically recruited %d creatures from dwelling", recruitedTotal);
+		cb->selectionMade(0, queryID);
+		return;
+	}
+
 	waitWhileDialog();
 	auto recruitCb = [this, dwelling, dst](CreatureID id, int count)
 	{

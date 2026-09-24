@@ -21,6 +21,7 @@ namespace AutoHeroes
 
 enum class Action;
 enum class DecisionPolicy;
+enum class RecruitmentScope;
 struct HeroConfig;
 
 }
@@ -40,6 +41,7 @@ class AutoHeroController
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
+	std::optional<AutoHeroes::Action> activeAction;
 	int3 movementStartPosition = int3(-1, -1, -1);
 	int movementStartPoints = -1;
 	int stepsForCurrentHero = 0;
@@ -49,10 +51,14 @@ class AutoHeroController
 	void finishRun();
 	void advanceHero();
 	bool startNextAction(const CGHeroInstance * hero);
-	bool startMovement(const CGHeroInstance * hero, const int3 & destination);
+	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false);
 	std::optional<int3> findCollectTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	std::optional<int3> findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	std::optional<int3> findRecruitTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findExploreTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
-	bool pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination) const;
+	std::optional<int3> findCaptureTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	std::optional<int3> findFightTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	bool pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle) const;
 	bool withinConfiguredRadius(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config, const int3 & destination) const;
 
 public:
@@ -66,4 +72,12 @@ public:
 	bool isRunning() const { return running; }
 	AutoHeroes::DecisionPolicy decisionPolicy() const;
 	bool allowsSecondarySkillLearning() const;
+	bool allowsAction(AutoHeroes::Action action) const;
+	const CGHeroInstance * currentHero() const;
+	int goldReserve() const;
+	AutoHeroes::RecruitmentScope recruitmentScope() const;
+	int maxForeignFactionSlots() const;
+	bool shouldAutoFight(const CGHeroInstance * hero) const;
+	bool isAutoBattleActive() const;
+	void onBattleFinished();
 };

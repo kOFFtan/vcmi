@@ -14,6 +14,9 @@
 #include "../lib/callback/CCallback.h"
 #include "../lib/mapObjects/CGHeroInstance.h"
 #include "../lib/mapObjects/CGObjectInstance.h"
+#include "../lib/mapObjects/CGDwelling.h"
+#include "../lib/mapObjects/IOwnableObject.h"
+#include "../lib/mapObjects/army/CArmedInstance.h"
 #include "../lib/pathfinder/CGPathNode.h"
 
 namespace
@@ -65,6 +68,66 @@ bool isTeleportAction(EPathNodeAction action)
 		|| action == EPathNodeAction::TELEPORT_BATTLE;
 }
 
+bool isSecondarySkillLearningTarget(const CGObjectInstance * target)
+{
+	if(!target)
+		return false;
+
+	return target->ID == Obj::WITCH_HUT
+		|| target->ID == Obj::UNIVERSITY
+		|| target->ID == Obj::SCHOLAR;
+}
+
+bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLearning)
+{
+	if(!target)
+		return false;
+
+	if(!allowSecondarySkillLearning && isSecondarySkillLearningTarget(target))
+		return false;
+
+	switch(target->ID)
+	{
+	case Obj::STAR_AXIS:
+	case Obj::SCHOLAR:
+	case Obj::SCHOOL_OF_MAGIC:
+	case Obj::SCHOOL_OF_WAR:
+	case Obj::GARDEN_OF_REVELATION:
+	case Obj::MARLETTO_TOWER:
+	case Obj::MERCENARY_CAMP:
+	case Obj::LEARNING_STONE:
+	case Obj::ARENA:
+	case Obj::LIBRARY_OF_ENLIGHTENMENT:
+	case Obj::SHRINE_OF_MAGIC_INCANTATION:
+	case Obj::SHRINE_OF_MAGIC_GESTURE:
+	case Obj::SHRINE_OF_MAGIC_THOUGHT:
+	case Obj::WITCH_HUT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool isCaptureTarget(const CGObjectInstance * target, PlayerColor player)
+{
+	if(!target || target->ID == Obj::HERO || target->ID == Obj::TOWN)
+		return false;
+
+	if(dynamic_cast<const IOwnableObject *>(target) == nullptr)
+		return false;
+
+	return target->getOwner() != player;
+}
+
+bool isRecruitTarget(const CGObjectInstance * target, PlayerColor player)
+{
+	const auto * dwelling = dynamic_cast<const CGDwelling *>(target);
+	if(!dwelling || dwelling->ID == Obj::WAR_MACHINE_FACTORY)
+		return false;
+
+	return dwelling->ID == Obj::REFUGEE_CAMP || dwelling->getOwner() == player;
+}
+
 }
 
 AutoHeroController::AutoHeroController(CPlayerInterface & owner_)
@@ -89,6 +152,62 @@ bool AutoHeroController::allowsSecondarySkillLearning() const
 {
 	const auto * hero = activeHero();
 	return hero && AutoHeroes::readHeroConfig(hero->id).allowSecondarySkillLearning;
+}
+
+bool AutoHeroController::allowsAction(AutoHeroes::Action action) const
+{
+	const auto * hero = activeHero();
+	return hero && AutoHeroes::readHeroConfig(hero->id).allows(action);
+}
+
+const CGHeroInstance * AutoHeroController::currentHero() const
+{
+	return activeHero();
+}
+
+int AutoHeroController::goldReserve() const
+{
+	const auto * hero = activeHero();
+	return hero ? AutoHeroes::readHeroConfig(hero->id).goldReserve : 0;
+}
+
+AutoHeroes::RecruitmentScope AutoHeroController::recruitmentScope() const
+{
+	const auto * hero = activeHero();
+	return hero ? AutoHeroes::readHeroConfig(hero->id).recruitmentScope : AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY;
+}
+
+int AutoHeroController::maxForeignFactionSlots() const
+{
+	const auto * hero = activeHero();
+	return hero ? AutoHeroes::readHeroConfig(hero->id).maxForeignFactionSlots : 0;
+}
+
+bool AutoHeroController::shouldAutoFight(const CGHeroInstance * hero) const
+{
+	if(!running || !hero || !activeHeroId || hero->id != *activeHeroId || !activeAction || *activeAction != AutoHeroes::Action::FIGHT_NEUTRALS)
+		return false;
+
+	return AutoHeroes::readHeroConfig(hero->id).combatPolicy != AutoHeroes::CombatPolicy::DISABLED;
+}
+
+bool AutoHeroController::isAutoBattleActive() const
+{
+	return running && activeAction && *activeAction == AutoHeroes::Action::FIGHT_NEUTRALS;
+}
+
+void AutoHeroController::onBattleFinished()
+{
+	if(!running)
+		return;
+
+	waitingForMovement = false;
+	waitingForDialog = false;
+	ENGINE->dispatchMainThread([this]()
+	{
+		if(running)
+			process();
+	});
 }
 
 void AutoHeroController::onDialogResolved()
@@ -140,7 +259,8 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
-	logGlobal->info("AutoHeroes v0.8: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
+	activeAction.reset();
+	logGlobal->info("AutoHeroes v1.0: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
 	process();
 	return true;
 }
@@ -158,6 +278,7 @@ void AutoHeroController::cancel()
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
+	activeAction.reset();
 }
 
 void AutoHeroController::update()
@@ -220,6 +341,7 @@ void AutoHeroController::finishRun()
 void AutoHeroController::advanceHero()
 {
 	activeHeroId.reset();
+	activeAction.reset();
 	stepsForCurrentHero = 0;
 	++heroQueueIndex;
 }
@@ -264,11 +386,11 @@ void AutoHeroController::process()
 		if(startNextAction(hero))
 			return;
 
-		logGlobal->info("AutoHeroes v0.8: no MVP target found for hero %s", hero->getNameTextID());
+		logGlobal->info("AutoHeroes v1.0: no configured target found for hero %s", hero->getNameTextID());
 		advanceHero();
 	}
 
-	logGlobal->info("AutoHeroes v0.8: configured heroes finished");
+	logGlobal->info("AutoHeroes v1.0: configured heroes finished");
 	finishRun();
 }
 
@@ -282,28 +404,43 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 			continue;
 
 		std::optional<int3> destination;
+		bool allowDestinationBattle = false;
 		switch(action)
 		{
 		case AutoHeroes::Action::COLLECT_RESOURCES:
 			destination = findCollectTarget(hero, config);
 			break;
+		case AutoHeroes::Action::LEVEL_UP:
+			destination = findLevelTarget(hero, config);
+			break;
+		case AutoHeroes::Action::RECRUIT_CREATURES:
+			destination = findRecruitTarget(hero, config);
+			break;
 		case AutoHeroes::Action::EXPLORE:
 			destination = findExploreTarget(hero, config);
 			break;
-		default:
-			// Stage 6 MVP only automates collection and exploration. Other actions
-			// stay configured and will be implemented on top of this stable controller.
+		case AutoHeroes::Action::CAPTURE_OBJECTS:
+			destination = findCaptureTarget(hero, config);
+			break;
+		case AutoHeroes::Action::FIGHT_NEUTRALS:
+			destination = findFightTarget(hero, config);
+			allowDestinationBattle = destination.has_value();
 			break;
 		}
 
-		if(destination && startMovement(hero, *destination))
-			return true;
+		if(destination)
+		{
+			activeAction = action;
+			if(startMovement(hero, *destination, allowDestinationBattle))
+				return true;
+			activeAction.reset();
+		}
 	}
 
 	return false;
 }
 
-bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 & destination)
+bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle)
 {
 	if(!hero || destination == hero->visitablePos())
 		return false;
@@ -316,7 +453,7 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 	if(!paths->getPath(path, destination, EPathfindingLayer::AUTO))
 		return false;
 
-	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination))
+	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination, allowDestinationBattle))
 		return false;
 
 	const CGPathNode * destinationNode = paths->getPathInfo(destination);
@@ -330,7 +467,7 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 	++stepsForCurrentHero;
 	waitingForMovement = true;
 
-	logGlobal->info("AutoHeroes v0.8: moving hero %s from %s to %s (MP=%d, destination turns=%d)", hero->getNameTextID(), movementStartPosition.toString(), destination.toString(), movementStartPoints, destinationTurns);
+	logGlobal->info("AutoHeroes v1.0: moving hero %s from %s to %s (MP=%d, destination turns=%d)", hero->getNameTextID(), movementStartPosition.toString(), destination.toString(), movementStartPoints, destinationTurns);
 	owner.moveHero(hero, path);
 
 	if(!owner.isHeroMoving())
@@ -380,7 +517,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 						continue;
 
 					CGPath path;
-					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination))
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
 						continue;
 
 					best = destination;
@@ -389,6 +526,238 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 			}
 		}
 	}
+
+	return best;
+}
+
+std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	const auto paths = owner.getPathsInfo(hero);
+	if(!paths)
+		return std::nullopt;
+
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					if(!isLevelUpTarget(object, config.allowSecondarySkillLearning) || object->wasVisited(hero))
+						continue;
+
+					if((object->ID == Obj::SCHOOL_OF_MAGIC || object->ID == Obj::SCHOOL_OF_WAR)
+						&& owner.cb->getResourceAmount(EGameResID::GOLD) - 1000 < config.goldReserve)
+						continue;
+
+					const int3 destination = object->visitablePos();
+					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+						continue;
+					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+						continue;
+
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
+						continue;
+
+					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+					{
+						best = destination;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
+
+	return best;
+}
+
+std::optional<int3> AutoHeroController::findRecruitTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	const auto paths = owner.getPathsInfo(hero);
+	const auto player = owner.cb->getPlayerID();
+	if(!paths || !player)
+		return std::nullopt;
+
+	auto resources = owner.cb->getResourceAmount();
+	resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - config.goldReserve);
+
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					if(!isRecruitTarget(object, *player))
+						continue;
+
+					const auto * dwelling = dynamic_cast<const CGDwelling *>(object);
+					bool useful = false;
+					for(const auto & level : dwelling->creatures)
+					{
+						if(level.first == 0 || level.second.empty())
+							continue;
+						const CreatureID creature = level.second.back();
+						if(config.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
+							&& creature.toCreature()->getFactionID() != hero->getFactionID())
+							continue;
+						if(!hero->getSlotFor(creature).validSlot())
+							continue;
+						if(creature.toCreature()->maxAmount(resources) <= 0)
+							continue;
+						useful = true;
+						break;
+					}
+					if(!useful)
+						continue;
+
+					const int3 destination = object->visitablePos();
+					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+						continue;
+					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+						continue;
+
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
+						continue;
+
+					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+					{
+						best = destination;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
+
+	return best;
+}
+
+std::optional<int3> AutoHeroController::findCaptureTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	const auto paths = owner.getPathsInfo(hero);
+	const auto player = owner.cb->getPlayerID();
+	if(!paths || !player)
+		return std::nullopt;
+
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					if(!isCaptureTarget(object, *player))
+						continue;
+					const int3 destination = object->visitablePos();
+					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+						continue;
+					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+						continue;
+
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
+						continue;
+
+					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+					{
+						best = destination;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
+
+	return best;
+}
+
+std::optional<int3> AutoHeroController::findFightTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	if(config.combatPolicy == AutoHeroes::CombatPolicy::DISABLED)
+		return std::nullopt;
+
+	const auto paths = owner.getPathsInfo(hero);
+	if(!paths)
+		return std::nullopt;
+
+	const double requiredRatio = config.combatPolicy == AutoHeroes::CombatPolicy::SAFE_ONLY ? 2.0 : 1.35;
+	const double heroStrength = static_cast<double>(std::max<ui64>(1, hero->estimateHeroCombatValue()));
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					if(!object || object->ID != Obj::MONSTER)
+						continue;
+					const auto * army = dynamic_cast<const CArmedInstance *>(object);
+					if(!army)
+						continue;
+					const double enemyStrength = static_cast<double>(std::max<ui64>(1, army->estimateCombatValue()));
+					if(heroStrength / enemyStrength < requiredRatio)
+						continue;
+
+					const int3 destination = object->visitablePos();
+					if(!withinConfiguredRadius(hero, config, destination))
+						continue;
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, true))
+						continue;
+
+					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+					{
+						best = destination;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
 
 	return best;
 }
@@ -443,7 +812,7 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 					continue;
 
 				CGPath path;
-				if(!paths->getPath(path, tile, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, tile))
+				if(!paths->getPath(path, tile, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, tile, false))
 					continue;
 
 				// Prefer a frontier reachable sooner. If nothing useful can be reached
@@ -465,17 +834,23 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 	return best;
 }
 
-bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination) const
+bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle) const
 {
 	if(path.nodes.size() < 2)
 		return false;
 
 	for(const auto & node : path.nodes)
 	{
-		if(node.accessible == EPathAccessibility::GUARDED || isBattleAction(node.action) || isTeleportAction(node.action))
+		const bool isDestination = node.coord == destination;
+		if(isTeleportAction(node.action))
 			return false;
+		if(node.accessible == EPathAccessibility::GUARDED || isBattleAction(node.action))
+		{
+			if(!(allowDestinationBattle && isDestination))
+				return false;
+		}
 
-		if(node.coord != hero->visitablePos() && node.coord != destination)
+		if(node.coord != hero->visitablePos() && !isDestination)
 		{
 			if(node.action != EPathNodeAction::NORMAL && node.action != EPathNodeAction::UNKNOWN)
 				return false;
