@@ -10,10 +10,13 @@
 
 #include <cstddef>
 #include <optional>
+#include <set>
 #include <vector>
 
 class CPlayerInterface;
 class CGHeroInstance;
+class CGDwelling;
+class CGTownInstance;
 struct CGPath;
 
 namespace AutoHeroes
@@ -45,6 +48,7 @@ class AutoHeroController
 	int3 movementStartPosition = int3(-1, -1, -1);
 	int movementStartPoints = -1;
 	int stepsForCurrentHero = 0;
+	std::set<ObjectInstanceID> attemptedRecruitTowns;
 
 	const CGHeroInstance * activeHero() const;
 	void process();
@@ -55,6 +59,8 @@ class AutoHeroController
 	std::optional<int3> findCollectTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findRecruitTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	bool dwellingHasUsefulRecruit(const CGDwelling * dwelling, const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	int recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
 	std::optional<int3> findExploreTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findCaptureTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findFightTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
@@ -80,4 +86,5 @@ public:
 	bool shouldAutoFight(const CGHeroInstance * hero) const;
 	bool isAutoBattleActive() const;
 	void onBattleFinished();
+	void onNewTurn();
 };

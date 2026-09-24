@@ -409,6 +409,7 @@ void CPlayerInterface::acceptTurn(QueryID queryID, bool hotseatWait)
 	if (queryID.hasValue())
 		cb->selectionMade(0, queryID);
 	movementController->onPlayerTurnStarted();
+	autoHeroController->onNewTurn();
 
 	// Enabled AutoHeroes are persistent. Schedule them automatically at the
 	// beginning of every human turn, after startup/hotseat dialogs have settled.

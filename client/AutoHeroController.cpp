@@ -16,6 +16,7 @@
 #include "../lib/mapObjects/CGHeroInstance.h"
 #include "../lib/mapObjects/CGObjectInstance.h"
 #include "../lib/mapObjects/CGDwelling.h"
+#include "../lib/mapObjects/CGTownInstance.h"
 #include "../lib/mapObjects/IOwnableObject.h"
 #include "../lib/mapObjects/army/CArmedInstance.h"
 #include "../lib/pathfinder/CGPathNode.h"
@@ -123,10 +124,24 @@ bool isCaptureTarget(const CGObjectInstance * target, PlayerColor player)
 bool isRecruitTarget(const CGObjectInstance * target, PlayerColor player)
 {
 	const auto * dwelling = dynamic_cast<const CGDwelling *>(target);
-	if(!dwelling || dwelling->ID == Obj::WAR_MACHINE_FACTORY)
+	if(!dwelling || dynamic_cast<const CGTownInstance *>(target) || dwelling->ID == Obj::WAR_MACHINE_FACTORY)
 		return false;
 
 	return dwelling->ID == Obj::REFUGEE_CAMP || dwelling->getOwner() == player;
+}
+
+const char * actionName(AutoHeroes::Action action)
+{
+	switch(action)
+	{
+	case AutoHeroes::Action::COLLECT_RESOURCES: return "collect";
+	case AutoHeroes::Action::LEVEL_UP: return "level";
+	case AutoHeroes::Action::RECRUIT_CREATURES: return "recruit";
+	case AutoHeroes::Action::EXPLORE: return "explore";
+	case AutoHeroes::Action::CAPTURE_OBJECTS: return "capture";
+	case AutoHeroes::Action::FIGHT_NEUTRALS: return "fight";
+	}
+	return "unknown";
 }
 
 }
@@ -134,6 +149,12 @@ bool isRecruitTarget(const CGObjectInstance * target, PlayerColor player)
 AutoHeroController::AutoHeroController(CPlayerInterface & owner_)
 	: owner(owner_)
 {
+}
+
+void AutoHeroController::onNewTurn()
+{
+	attemptedRecruitTowns.clear();
+	logGlobal->info("AutoHeroes v1.1: cleared per-turn town recruitment attempts");
 }
 
 const CGHeroInstance * AutoHeroController::activeHero() const
@@ -313,6 +334,17 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		return;
 	}
 
+	if(activeAction && *activeAction == AutoHeroes::Action::RECRUIT_CREATURES)
+	{
+		const auto config = AutoHeroes::readHeroConfig(hero->id);
+		const int recruited = recruitFromCurrentTown(hero, config);
+		if(recruited > 0)
+		{
+			logGlobal->info("AutoHeroes v1.1: recruited %d creatures from town for hero %s", recruited, hero->getNameTextID());
+			owner.closeAllDialogs();
+		}
+	}
+
 	if(owner.showingDialog->isBusy())
 	{
 		waitingForDialog = true;
@@ -432,6 +464,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		if(destination)
 		{
 			activeAction = action;
+			logGlobal->info("AutoHeroes v1.1: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
 			if(startMovement(hero, *destination, allowDestinationBattle))
 				return true;
 			activeAction.reset();
@@ -585,15 +618,138 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 	return best;
 }
 
+bool AutoHeroController::dwellingHasUsefulRecruit(const CGDwelling * dwelling, const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	if(!dwelling || !hero)
+		return false;
+
+	auto resources = owner.cb->getResourceAmount();
+	resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - config.goldReserve);
+
+	int foreignSlots = 0;
+	for(const auto & stack : hero->Slots())
+		if(stack.second->getType() && stack.second->getCreature()->getFactionID() != hero->getFactionID())
+			++foreignSlots;
+
+	for(const auto & level : dwelling->creatures)
+	{
+		if(level.first == 0 || level.second.empty())
+			continue;
+
+		const CreatureID creature = level.second.back();
+		const auto * creatureType = creature.toCreature();
+		if(config.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
+			&& creatureType->getFactionID() != hero->getFactionID())
+			continue;
+
+		bool alreadyHasCreature = false;
+		for(const auto & stack : hero->Slots())
+			if(stack.second->getCreatureID() == creature)
+			{
+				alreadyHasCreature = true;
+				break;
+			}
+
+		if(creatureType->getFactionID() != hero->getFactionID()
+			&& config.maxForeignFactionSlots >= 0
+			&& !alreadyHasCreature
+			&& foreignSlots >= config.maxForeignFactionSlots)
+			continue;
+
+		if(!hero->getSlotFor(creature).validSlot())
+			continue;
+		if(creatureType->maxAmount(resources) <= 0)
+			continue;
+		return true;
+	}
+
+	return false;
+}
+
+int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config)
+{
+	if(!hero || !owner.cb)
+		return 0;
+
+	const auto player = owner.cb->getPlayerID();
+	if(!player)
+		return 0;
+
+	for(const auto * object : owner.cb->getVisitableObjs(hero->visitablePos()))
+	{
+		const auto * town = dynamic_cast<const CGTownInstance *>(object);
+		if(!town || town->getOwner() != *player)
+			continue;
+		if(attemptedRecruitTowns.count(town->id))
+			return 0;
+
+		attemptedRecruitTowns.insert(town->id);
+		if(town->getVisitingHero() != hero && town->getGarrisonHero() != hero)
+		{
+			logGlobal->warn("AutoHeroes v1.1: hero %s reached town %s but is not registered as visiting/garrison hero; town recruitment skipped", hero->getNameTextID(), town->visitablePos().toString());
+			return 0;
+		}
+
+		auto resources = owner.cb->getResourceAmount();
+		resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - config.goldReserve);
+		int recruitedTotal = 0;
+		int foreignSlots = 0;
+		for(const auto & stack : hero->Slots())
+			if(stack.second->getType() && stack.second->getCreature()->getFactionID() != hero->getFactionID())
+				++foreignSlots;
+
+		for(int levelIndex = 0; levelIndex < static_cast<int>(town->creatures.size()); ++levelIndex)
+		{
+			const auto & level = town->creatures[levelIndex];
+			if(level.first == 0 || level.second.empty())
+				continue;
+
+			const CreatureID creature = level.second.back();
+			const auto * creatureType = creature.toCreature();
+			if(config.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
+				&& creatureType->getFactionID() != hero->getFactionID())
+				continue;
+
+			bool alreadyHasCreature = false;
+			for(const auto & stack : hero->Slots())
+				if(stack.second->getCreatureID() == creature)
+				{
+					alreadyHasCreature = true;
+					break;
+				}
+
+			if(creatureType->getFactionID() != hero->getFactionID()
+				&& config.maxForeignFactionSlots >= 0
+				&& !alreadyHasCreature
+				&& foreignSlots >= config.maxForeignFactionSlots)
+				continue;
+			if(!hero->getSlotFor(creature).validSlot())
+				continue;
+
+			const int count = std::min<int>(level.first, creatureType->maxAmount(resources));
+			if(count <= 0)
+				continue;
+
+			owner.cb->recruitCreatures(town, hero, creature, count, levelIndex);
+			resources -= creatureType->getFullRecruitCost() * count;
+			recruitedTotal += count;
+			if(creatureType->getFactionID() != hero->getFactionID() && !alreadyHasCreature)
+				++foreignSlots;
+		}
+
+		logGlobal->info("AutoHeroes v1.1: town recruitment attempt at %s finished, recruited=%d", town->visitablePos().toString(), recruitedTotal);
+		return recruitedTotal;
+	}
+
+	return 0;
+}
+
 std::optional<int3> AutoHeroController::findRecruitTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
 {
 	const auto paths = owner.getPathsInfo(hero);
 	const auto player = owner.cb->getPlayerID();
 	if(!paths || !player)
 		return std::nullopt;
-
-	auto resources = owner.cb->getResourceAmount();
-	resources[EGameResID::GOLD] = std::max(0, resources[EGameResID::GOLD] - config.goldReserve);
 
 	const int3 mapSize = owner.cb->getMapSize();
 	std::optional<int3> best;
@@ -610,28 +766,21 @@ std::optional<int3> AutoHeroController::findRecruitTarget(const CGHeroInstance *
 
 				for(const auto * object : owner.cb->getVisitableObjs(tile))
 				{
-					if(!isRecruitTarget(object, *player))
-						continue;
-
 					const auto * dwelling = dynamic_cast<const CGDwelling *>(object);
-					bool useful = false;
-					for(const auto & level : dwelling->creatures)
+					const auto * town = dynamic_cast<const CGTownInstance *>(object);
+
+					if(town)
 					{
-						if(level.first == 0 || level.second.empty())
+						if(town->getOwner() != *player || attemptedRecruitTowns.count(town->id))
 							continue;
-						const CreatureID creature = level.second.back();
-						if(config.recruitmentScope == AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY
-							&& creature.toCreature()->getFactionID() != hero->getFactionID())
+						if(!dwellingHasUsefulRecruit(town, hero, config))
 							continue;
-						if(!hero->getSlotFor(creature).validSlot())
-							continue;
-						if(creature.toCreature()->maxAmount(resources) <= 0)
-							continue;
-						useful = true;
-						break;
 					}
-					if(!useful)
-						continue;
+					else
+					{
+						if(!isRecruitTarget(object, *player) || !dwellingHasUsefulRecruit(dwelling, hero, config))
+							continue;
+					}
 
 					const int3 destination = object->visitablePos();
 					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
