@@ -1216,8 +1216,10 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 		&& selection && components.size() == 2)
 	{
 		const bool takeExperience = autoHeroController->treasureChestChoice() == AutoHeroes::TreasureChestChoice::EXPERIENCE;
-		const int option = takeExperience ? 1 : 0;
-		logGlobal->info("AutoHeroes v1.3: automatically choosing treasure reward=%s option=%d",
+		// Blocking selection replies are 1-based: 0 means cancel/no selection.
+		// Treasure chest option 1 is gold, option 2 is experience.
+		const int option = takeExperience ? 2 : 1;
+		logGlobal->info("AutoHeroes v1.4: automatically choosing treasure reward=%s option=%d",
 			takeExperience ? "experience" : "gold", option);
 		cb->selectionMade(option, askID);
 		return;
@@ -1228,8 +1230,8 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 	{
 		if(selection && !components.empty())
 		{
-			logGlobal->info("AutoHeroes v0.7: automatically choosing first option in blocking dialog");
-			cb->selectionMade(0, askID);
+			logGlobal->info("AutoHeroes v1.4: automatically choosing first option in blocking dialog");
+			cb->selectionMade(1, askID);
 			return;
 		}
 		if(!selection && cancel)

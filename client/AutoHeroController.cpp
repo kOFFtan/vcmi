@@ -113,8 +113,14 @@ bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLe
 
 bool isCaptureTarget(const CGObjectInstance * target, PlayerColor player)
 {
-	if(!target || target->ID == Obj::HERO || target->ID == Obj::TOWN)
+	if(!target || target->ID == Obj::HERO)
 		return false;
+
+	// Town recruitment is handled separately, but a free neutral town is still
+	// a strategic capture target. Enemy-owned towns are intentionally left out
+	// until town-garrison danger evaluation is added.
+	if(target->ID == Obj::TOWN)
+		return target->getOwner() == PlayerColor::NEUTRAL;
 
 	if(dynamic_cast<const IOwnableObject *>(target) == nullptr)
 		return false;
@@ -578,24 +584,69 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 				{
 					if(!isMvpCollectTarget(object))
 						continue;
-					if(object->wasVisited(hero))
-						continue;
 
+					const bool diagnoseResource = object->ID == Obj::RESOURCE || object->ID == Obj::RANDOM_RESOURCE;
 					const int3 destination = object->visitablePos();
-					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+					auto logResourceReject = [&](const char * reason)
+					{
+						if(diagnoseResource)
+							logGlobal->info("AutoHeroes v1.4 collect resource candidate subtype=%s coord=%s result=REJECT reason=%s",
+								object->getSubtypeName(), destination.toString(), reason);
+					};
+
+					if(object->wasVisited(hero))
+					{
+						logResourceReject("visited");
 						continue;
+					}
+					if(destination == hero->visitablePos())
+					{
+						logResourceReject("same_position");
+						continue;
+					}
+					if(!withinConfiguredRadius(hero, config, destination))
+					{
+						logResourceReject("outside_radius");
+						continue;
+					}
 					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+					{
+						logResourceReject("guarded");
 						continue;
+					}
 
 					const CGPathNode * node = paths->getPathInfo(destination);
-					if(!node || !node->reachable())
+					if(!node)
+					{
+						logResourceReject("no_path_info");
 						continue;
+					}
+					if(!node->reachable())
+					{
+						logResourceReject("unreachable");
+						continue;
+					}
 					if(node->turns > bestTurns || (node->turns == bestTurns && node->cost >= bestCost))
+					{
+						logResourceReject("farther_than_current_best");
 						continue;
+					}
 
 					CGPath path;
-					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO))
+					{
+						logResourceReject("path_not_found");
 						continue;
+					}
+					if(!pathIsSafeForMvp(hero, path, destination, false))
+					{
+						logResourceReject("path_unsafe");
+						continue;
+					}
+
+					if(diagnoseResource)
+						logGlobal->info("AutoHeroes v1.4 collect resource candidate subtype=%s coord=%s turns=%d cost=%.1f result=ACCEPT",
+							object->getSubtypeName(), destination.toString(), node->turns, node->cost);
 
 					best = destination;
 					bestTurns = node->turns;
