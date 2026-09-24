@@ -136,6 +136,7 @@ JsonNode serializeHeroConfig(const HeroConfig & config)
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
+	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
 
 	switch(config.combatPolicy)
@@ -183,6 +184,11 @@ HeroConfig deserializeHeroConfig(const JsonNode & node)
 
 	const std::string decision = readString(node, "decisionPolicy", "askHuman");
 	result.decisionPolicy = decision == "autoAccept" ? DecisionPolicy::AUTO_ACCEPT : DecisionPolicy::ASK_HUMAN;
+
+	const std::string treasureChestChoice = readString(node, "treasureChestChoice", "gold");
+	result.treasureChestChoice = treasureChestChoice == "experience"
+		? TreasureChestChoice::EXPERIENCE
+		: TreasureChestChoice::GOLD;
 
 	const std::string combat = readString(node, "combatPolicy", "safeOnly");
 	if(combat == "disabled")
@@ -249,6 +255,7 @@ void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
+	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
 
 	switch(config.combatPolicy)

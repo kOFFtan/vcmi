@@ -53,6 +53,12 @@ enum class DecisionPolicy
 	AUTO_ACCEPT
 };
 
+enum class TreasureChestChoice
+{
+	GOLD,
+	EXPERIENCE
+};
+
 struct HeroConfig
 {
 	bool enabled = false;
@@ -64,6 +70,7 @@ struct HeroConfig
 	int maxForeignFactionSlots = 0;
 	CombatPolicy combatPolicy = CombatPolicy::SAFE_ONLY;
 	DecisionPolicy decisionPolicy = DecisionPolicy::ASK_HUMAN;
+	TreasureChestChoice treasureChestChoice = TreasureChestChoice::GOLD;
 	/// If false, AutoHeroes must not intentionally visit map objects that teach secondary skills.
 	bool allowSecondarySkillLearning = false;
 	/// Legacy reserve kept for non-recruitment paid map objects. Recruitment uses recruitmentBudget.

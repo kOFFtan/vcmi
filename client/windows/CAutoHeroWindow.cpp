@@ -42,7 +42,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	OBJECT_CONSTRUCTION;
 
 	constexpr int WIN_W = 760;
-	constexpr int WIN_H = 610;
+	constexpr int WIN_H = 680;
 
 	pos = Rect(pos.x, pos.y, WIN_W, WIN_H);
 	updateShadow();
@@ -63,9 +63,9 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	// black quest text boxes which overlapped the AutoHeroes controls on Android.
 	keep(std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK"), Rect(0, 0, WIN_W, WIN_H)));
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 94, 720, 246), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
-	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 172), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+	keep(std::make_shared<TransparentFilledRectangle>(Rect(20, 350, 720, 242), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 
-	std::string title = tr("vcmi.autoHeroes.title") + " v1.2: " + GAME->translator().translate(hero->getNameTextID());
+	std::string title = tr("vcmi.autoHeroes.title") + " v1.3: " + GAME->translator().translate(hero->getNameTextID());
 	keep(std::make_shared<CLabel>(WIN_W / 2, 24, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 700));
 
 	auto enabled = keep(std::make_shared<CToggleButton>(
@@ -194,15 +194,25 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	}));
 	updateRecruitmentBudgetButton();
 
-	keep(std::make_shared<CLabel>(30, 500, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 700));
+	keep(std::make_shared<CLabel>(30, 500, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.treasureChest")));
+	treasureChestButton = keep(std::make_shared<CButton>(Point(30, 520), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.treasureChestHelp")), [this]()
+	{
+		draft.treasureChestChoice = draft.treasureChestChoice == AutoHeroes::TreasureChestChoice::GOLD
+			? AutoHeroes::TreasureChestChoice::EXPERIENCE
+			: AutoHeroes::TreasureChestChoice::GOLD;
+		updateTreasureChestButton();
+	}));
+	updateTreasureChestButton();
 
-	auto run = keep(std::make_shared<CButton>(Point(30, 552), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
+	keep(std::make_shared<CLabel>(250, 526, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 480));
+
+	auto run = keep(std::make_shared<CButton>(Point(30, 622), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
 	run->setTextOverlay(tr("vcmi.autoHeroes.runNow"), FONT_SMALL, Colors::YELLOW);
 
-	auto cancel = keep(std::make_shared<CButton>(Point(500, 552), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
+	auto cancel = keep(std::make_shared<CButton>(Point(500, 622), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.cancel")), [this](){ close(); }, EShortcut::GLOBAL_CANCEL));
 	cancel->setTextOverlay(tr("vcmi.autoHeroes.cancelShort"), FONT_SMALL, Colors::YELLOW);
 
-	auto save = keep(std::make_shared<CButton>(Point(590, 552), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
+	auto save = keep(std::make_shared<CButton>(Point(590, 622), AnimationPath::builtin("settingsWindow/button80"), CButton::tooltip(tr("vcmi.autoHeroes.save")), [this](){ saveAndClose(); }, EShortcut::GLOBAL_ACCEPT));
 	save->setTextOverlay(tr("vcmi.autoHeroes.saveShort"), FONT_SMALL, Colors::YELLOW);
 }
 
@@ -304,6 +314,14 @@ void CAutoHeroWindow::updateSkillLearningButton()
 		? "vcmi.autoHeroes.skillLearningAllow"
 		: "vcmi.autoHeroes.skillLearningBlock";
 	skillLearningButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
+}
+
+void CAutoHeroWindow::updateTreasureChestButton()
+{
+	const std::string key = draft.treasureChestChoice == AutoHeroes::TreasureChestChoice::EXPERIENCE
+		? "vcmi.autoHeroes.treasureChestExperience"
+		: "vcmi.autoHeroes.treasureChestGold";
+	treasureChestButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
 }
 
 void CAutoHeroWindow::persistSettings()

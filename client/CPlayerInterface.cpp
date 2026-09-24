@@ -1212,6 +1212,18 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 
 	if(autoHeroController && autoHeroController->isRunning()
+		&& autoHeroController->isTreasureChestInteraction()
+		&& selection && components.size() == 2)
+	{
+		const bool takeExperience = autoHeroController->treasureChestChoice() == AutoHeroes::TreasureChestChoice::EXPERIENCE;
+		const int option = takeExperience ? 1 : 0;
+		logGlobal->info("AutoHeroes v1.3: automatically choosing treasure reward=%s option=%d",
+			takeExperience ? "experience" : "gold", option);
+		cb->selectionMade(option, askID);
+		return;
+	}
+
+	if(autoHeroController && autoHeroController->isRunning()
 		&& autoHeroController->decisionPolicy() == AutoHeroes::DecisionPolicy::AUTO_ACCEPT)
 	{
 		if(selection && !components.empty())

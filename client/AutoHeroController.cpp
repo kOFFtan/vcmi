@@ -39,6 +39,7 @@ bool isMvpCollectTarget(const CGObjectInstance * target)
 	case Obj::FLOTSAM:
 	case Obj::LEAN_TO:
 	case Obj::MYSTICAL_GARDEN:
+	case Obj::TREASURE_CHEST:
 	case Obj::SEA_CHEST:
 	case Obj::WATER_WHEEL:
 	case Obj::WINDMILL:
@@ -181,6 +182,17 @@ AutoHeroes::DecisionPolicy AutoHeroController::decisionPolicy() const
 	return hero ? AutoHeroes::readHeroConfig(hero->id).decisionPolicy : AutoHeroes::DecisionPolicy::ASK_HUMAN;
 }
 
+AutoHeroes::TreasureChestChoice AutoHeroController::treasureChestChoice() const
+{
+	const auto * hero = activeHero();
+	return hero ? AutoHeroes::readHeroConfig(hero->id).treasureChestChoice : AutoHeroes::TreasureChestChoice::GOLD;
+}
+
+bool AutoHeroController::isTreasureChestInteraction() const
+{
+	return running && activeAction && *activeAction == AutoHeroes::Action::COLLECT_RESOURCES && activeCollectTreasureChest;
+}
+
 bool AutoHeroController::allowsSecondarySkillLearning() const
 {
 	const auto * hero = activeHero();
@@ -293,6 +305,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
 	activeAction.reset();
+	activeCollectTreasureChest = false;
 	logGlobal->info("AutoHeroes v1.0: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
 	process();
 	return true;
@@ -312,6 +325,7 @@ void AutoHeroController::cancel()
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
 	activeAction.reset();
+	activeCollectTreasureChest = false;
 }
 
 void AutoHeroController::update()
@@ -376,6 +390,7 @@ void AutoHeroController::finishRun()
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
+	activeCollectTreasureChest = false;
 	stepsForCurrentHero = 0;
 
 	logGlobal->info("AutoHeroes v0.8: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
@@ -386,6 +401,7 @@ void AutoHeroController::advanceHero()
 {
 	activeHeroId.reset();
 	activeAction.reset();
+	activeCollectTreasureChest = false;
 	stepsForCurrentHero = 0;
 	++heroQueueIndex;
 }
@@ -475,10 +491,23 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		if(destination)
 		{
 			activeAction = action;
-			logGlobal->info("AutoHeroes v1.2: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
+			activeCollectTreasureChest = false;
+			if(action == AutoHeroes::Action::COLLECT_RESOURCES)
+			{
+				for(const auto * object : owner.cb->getVisitableObjs(*destination))
+				{
+					if(object && (object->ID == Obj::TREASURE_CHEST || object->ID == Obj::SEA_CHEST))
+					{
+						activeCollectTreasureChest = true;
+						break;
+					}
+				}
+			}
+			logGlobal->info("AutoHeroes v1.3: hero %s selected action=%s target=%s", hero->getNameTextID(), actionName(action), destination->toString());
 			if(startMovement(hero, *destination, allowDestinationBattle))
 				return true;
 			activeAction.reset();
+			activeCollectTreasureChest = false;
 		}
 	}
 
@@ -532,6 +561,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 
 	const int3 mapSize = owner.cb->getMapSize();
 	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
 	float bestCost = std::numeric_limits<float>::max();
 
 	for(int z = 0; z < mapSize.z; ++z)
@@ -558,7 +588,9 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 						continue;
 
 					const CGPathNode * node = paths->getPathInfo(destination);
-					if(!node || !node->reachable() || node->turns != 0 || node->cost >= bestCost)
+					if(!node || !node->reachable())
+						continue;
+					if(node->turns > bestTurns || (node->turns == bestTurns && node->cost >= bestCost))
 						continue;
 
 					CGPath path;
@@ -566,6 +598,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 						continue;
 
 					best = destination;
+					bestTurns = node->turns;
 					bestCost = node->cost;
 				}
 			}

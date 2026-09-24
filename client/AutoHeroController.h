@@ -25,6 +25,7 @@ namespace AutoHeroes
 
 enum class Action;
 enum class DecisionPolicy;
+enum class TreasureChestChoice;
 enum class RecruitmentScope;
 enum class RecruitmentBudget;
 struct HeroConfig;
@@ -47,6 +48,7 @@ class AutoHeroController
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
 	std::optional<AutoHeroes::Action> activeAction;
+	bool activeCollectTreasureChest = false;
 	int3 movementStartPosition = int3(-1, -1, -1);
 	int movementStartPoints = -1;
 	int stepsForCurrentHero = 0;
@@ -82,6 +84,8 @@ public:
 	void onDialogResolved();
 	bool isRunning() const { return running; }
 	AutoHeroes::DecisionPolicy decisionPolicy() const;
+	AutoHeroes::TreasureChestChoice treasureChestChoice() const;
+	bool isTreasureChestInteraction() const;
 	bool allowsSecondarySkillLearning() const;
 	bool allowsAction(AutoHeroes::Action action) const;
 	const CGHeroInstance * currentHero() const;
