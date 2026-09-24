@@ -35,6 +35,7 @@ class AdventureMapShortcuts
 
 	std::string searchLast;
 	int searchPos;
+	bool continueEndTurnAfterAuto = false;
 	
 	void showOverview();
 	void worldViewBack();
@@ -118,4 +119,8 @@ public:
 	void setState(EAdventureState newState);
 	EAdventureState getState() const;
 	void onMapViewMoved(const Rect & visibleArea, int mapLevel);
+
+	/// Continue the normal End Turn flow after AutoHeroes has finished.
+	/// Auto-managed heroes are ignored by the movement reminder in this pass.
+	void continueEndTurnAfterAutoHeroes();
 };

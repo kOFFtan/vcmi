@@ -36,6 +36,7 @@
 #include "../replay/ReplaySelectionWindow.h"
 
 #include "../../lib/CConfigHandler.h"
+#include "../../lib/autoheroes/AutoHeroConfig.h"
 #include "../../lib/CPlayerState.h"
 #include "../../lib/callback/CCallback.h"
 #include "../../lib/gameState/QuestInfo.h"
@@ -297,6 +298,17 @@ void AdventureMapShortcuts::endTurn()
 	if(!GAME->interface()->makingTurn)
 		return;
 
+	const bool resumedAfterAutoHeroes = continueEndTurnAfterAuto;
+	continueEndTurnAfterAuto = false;
+
+	// A normal End Turn first gives enabled AutoHeroes a chance to spend their
+	// remaining movement. Explicit "Run AutoHeroes" still keeps the human turn active.
+	if(!resumedAfterAutoHeroes && GAME->interface()->runAutoHeroesNow(true))
+	{
+		logGlobal->info("AutoHeroes v0.8: End Turn intercepted; running configured heroes first");
+		return;
+	}
+
 	auto showMoveReminderDialog = [this]()
 	{
 		GAME->interface()->showYesNoDialog(
@@ -310,6 +322,9 @@ void AdventureMapShortcuts::endTurn()
 	{
 		for(const auto hero : GAME->interface()->localState->getWanderingHeroes())
 		{
+			if(resumedAfterAutoHeroes && AutoHeroes::isHeroEnabled(hero->id))
+				continue;
+
 			if(!GAME->interface()->localState->isHeroSleeping(hero) && hero->movementPointsRemaining() > 0)
 			{
 				GAME->interface()->localState->verifyPath(hero);
@@ -333,6 +348,12 @@ void AdventureMapShortcuts::endTurn()
 		}
 	}
 	owner.hotkeyEndingTurn();
+}
+
+void AdventureMapShortcuts::continueEndTurnAfterAutoHeroes()
+{
+	continueEndTurnAfterAuto = true;
+	endTurn();
 }
 
 void AdventureMapShortcuts::showThievesGuild()

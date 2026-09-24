@@ -241,9 +241,11 @@ public: // public interface for use by client via GAME->interface() access
 	/// True while a hero walks a path, including the pauses between single steps
 	bool isHeroMoving() const;
 
-	/// Run configured AutoHeroes through the live human interface. The human turn stays active.
-	bool runAutoHeroesNow();
+	/// Run configured AutoHeroes through the live human interface.
+	/// When endTurnAfter is true, native End Turn continues after automation finishes.
+	bool runAutoHeroesNow(bool endTurnAfter = false);
 	void onAutoHeroMovementFinished(const CGHeroInstance * hero);
+	void onAutoHeroesFinished(bool endTurnRequested);
 
 	///returns true if all events are processed internally
 	bool capturedAllEvents();

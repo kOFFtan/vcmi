@@ -36,6 +36,7 @@ class AutoHeroController
 	bool running = false;
 	bool waitingForMovement = false;
 	bool waitingForDialog = false;
+	bool endTurnAfterRun = false;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
@@ -45,6 +46,7 @@ class AutoHeroController
 
 	const CGHeroInstance * activeHero() const;
 	void process();
+	void finishRun();
 	void advanceHero();
 	bool startNextAction(const CGHeroInstance * hero);
 	bool startMovement(const CGHeroInstance * hero, const int3 & destination);
@@ -56,7 +58,7 @@ class AutoHeroController
 public:
 	explicit AutoHeroController(CPlayerInterface & owner_);
 
-	bool start();
+	bool start(bool endTurnWhenFinished = false);
 	void cancel();
 	void update();
 	void onHeroMovementFinished(const CGHeroInstance * hero);

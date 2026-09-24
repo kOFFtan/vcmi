@@ -98,17 +98,21 @@ void AutoHeroController::onDialogResolved()
 	waitingForDialog = false;
 }
 
-bool AutoHeroController::start()
+bool AutoHeroController::start(bool endTurnWhenFinished)
 {
 	if(running)
 	{
-		logGlobal->warn("AutoHeroes v0.7: controller is already running");
-		return false;
+		if(endTurnWhenFinished)
+		{
+			endTurnAfterRun = true;
+			logGlobal->info("AutoHeroes v0.8: End Turn requested while controller is running; turn will end after automation");
+		}
+		return true;
 	}
 
 	if(!owner.makingTurn || owner.isHeroMoving() || owner.showingDialog->isBusy())
 	{
-		logGlobal->warn("AutoHeroes v0.7: cannot start while turn, movement or dialog state is busy");
+		logGlobal->warn("AutoHeroes v0.8: cannot start while turn, movement or dialog state is busy");
 		return false;
 	}
 
@@ -125,17 +129,18 @@ bool AutoHeroController::start()
 
 	if(heroQueue.empty())
 	{
-		logGlobal->info("AutoHeroes v0.7: no enabled hero with movement points is available");
+		logGlobal->info("AutoHeroes v0.8: no enabled hero with movement points is available");
 		return false;
 	}
 
 	running = true;
 	waitingForMovement = false;
 	waitingForDialog = false;
+	endTurnAfterRun = endTurnWhenFinished;
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
-	logGlobal->info("AutoHeroes v0.7: starting local controller for %d configured heroes", static_cast<int>(heroQueue.size()));
+	logGlobal->info("AutoHeroes v0.8: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
 	process();
 	return true;
 }
@@ -143,11 +148,12 @@ bool AutoHeroController::start()
 void AutoHeroController::cancel()
 {
 	if(running)
-		logGlobal->info("AutoHeroes v0.7: local controller stopped");
+		logGlobal->info("AutoHeroes v0.8: local controller stopped");
 
 	running = false;
 	waitingForMovement = false;
 	waitingForDialog = false;
+	endTurnAfterRun = false;
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -180,7 +186,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		|| hero->movementPointsRemaining() < movementStartPoints;
 	if(!moved)
 	{
-		logGlobal->warn("AutoHeroes v0.7: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
+		logGlobal->warn("AutoHeroes v0.8: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
 		advanceHero();
 		return;
 	}
@@ -192,6 +198,23 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 	}
 
 	process();
+}
+
+void AutoHeroController::finishRun()
+{
+	const bool shouldEndTurn = endTurnAfterRun;
+
+	running = false;
+	waitingForMovement = false;
+	waitingForDialog = false;
+	endTurnAfterRun = false;
+	heroQueue.clear();
+	heroQueueIndex = 0;
+	activeHeroId.reset();
+	stepsForCurrentHero = 0;
+
+	logGlobal->info("AutoHeroes v0.8: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
+	owner.onAutoHeroesFinished(shouldEndTurn);
 }
 
 void AutoHeroController::advanceHero()
@@ -233,7 +256,7 @@ void AutoHeroController::process()
 		// Safety valve for maps that keep producing the same revisitable target.
 		if(stepsForCurrentHero >= 24)
 		{
-			logGlobal->warn("AutoHeroes v0.7: step limit reached for hero %s", hero->getNameTextID());
+			logGlobal->warn("AutoHeroes v0.8: step limit reached for hero %s", hero->getNameTextID());
 			advanceHero();
 			continue;
 		}
@@ -241,12 +264,12 @@ void AutoHeroController::process()
 		if(startNextAction(hero))
 			return;
 
-		logGlobal->info("AutoHeroes v0.7: no MVP target found for hero %s", hero->getNameTextID());
+		logGlobal->info("AutoHeroes v0.8: no MVP target found for hero %s", hero->getNameTextID());
 		advanceHero();
 	}
 
-	logGlobal->info("AutoHeroes v0.7: configured heroes finished; human turn remains active");
-	cancel();
+	logGlobal->info("AutoHeroes v0.8: configured heroes finished");
+	finishRun();
 }
 
 bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
@@ -296,6 +319,9 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination))
 		return false;
 
+	const CGPathNode * destinationNode = paths->getPathInfo(destination);
+	const int destinationTurns = destinationNode ? destinationNode->turns : -1;
+
 	owner.localState->setPath(hero, path);
 	owner.localState->setSelection(hero);
 
@@ -304,7 +330,7 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 	++stepsForCurrentHero;
 	waitingForMovement = true;
 
-	logGlobal->info("AutoHeroes v0.7: moving hero %s from %s to %s", hero->getNameTextID(), movementStartPosition.toString(), destination.toString());
+	logGlobal->info("AutoHeroes v0.8: moving hero %s from %s to %s (MP=%d, destination turns=%d)", hero->getNameTextID(), movementStartPosition.toString(), destination.toString(), movementStartPoints, destinationTurns);
 	owner.moveHero(hero, path);
 
 	if(!owner.isHeroMoving())
@@ -375,8 +401,9 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 
 	const int3 mapSize = owner.cb->getMapSize();
 	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
 	int bestHiddenNeighbours = -1;
-	int bestDistance = -1;
+	float bestCost = std::numeric_limits<float>::max();
 
 	for(int z = 0; z < mapSize.z; ++z)
 	{
@@ -393,7 +420,7 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 					continue;
 
 				const CGPathNode * node = paths->getPathInfo(tile);
-				if(!node || !node->reachable() || node->turns != 0 || node->accessible != EPathAccessibility::ACCESSIBLE)
+				if(!node || !node->reachable() || node->accessible != EPathAccessibility::ACCESSIBLE)
 					continue;
 
 				int hiddenNeighbours = 0;
@@ -419,12 +446,17 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 				if(!paths->getPath(path, tile, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, tile))
 					continue;
 
-				const int distance = hero->visitablePos().dist2d(tile);
-				if(hiddenNeighbours > bestHiddenNeighbours || (hiddenNeighbours == bestHiddenNeighbours && distance > bestDistance))
+				// Prefer a frontier reachable sooner. If nothing useful can be reached
+				// this turn, selecting a next-turn frontier still gives us a safe path
+				// whose current-turn segment can be walked with the remaining movement.
+				if(node->turns < bestTurns
+					|| (node->turns == bestTurns && hiddenNeighbours > bestHiddenNeighbours)
+					|| (node->turns == bestTurns && hiddenNeighbours == bestHiddenNeighbours && node->cost < bestCost))
 				{
 					best = tile;
+					bestTurns = node->turns;
 					bestHiddenNeighbours = hiddenNeighbours;
-					bestDistance = distance;
+					bestCost = node->cost;
 				}
 			}
 		}
@@ -440,7 +472,7 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
 
 	for(const auto & node : path.nodes)
 	{
-		if(node.turns != 0 || node.accessible == EPathAccessibility::GUARDED || isBattleAction(node.action) || isTeleportAction(node.action))
+		if(node.accessible == EPathAccessibility::GUARDED || isBattleAction(node.action) || isTeleportAction(node.action))
 			return false;
 
 		if(node.coord != hero->visitablePos() && node.coord != destination)

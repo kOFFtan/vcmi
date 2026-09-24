@@ -20,6 +20,7 @@
 #include "../lib/autoheroes/AutoHeroConfig.h"
 
 #include "adventureMap/AdventureMapInterface.h"
+#include "adventureMap/AdventureMapShortcuts.h"
 #include "adventureMap/CInGameConsole.h"
 #include "adventureMap/CList.h"
 
@@ -182,9 +183,24 @@ bool CPlayerInterface::isHeroMoving() const
 	return movementController->isHeroMoving();
 }
 
-bool CPlayerInterface::runAutoHeroesNow()
+bool CPlayerInterface::runAutoHeroesNow(bool endTurnAfter)
 {
-	return autoHeroController->start();
+	return autoHeroController->start(endTurnAfter);
+}
+
+void CPlayerInterface::onAutoHeroesFinished(bool endTurnRequested)
+{
+	if(!endTurnRequested)
+		return;
+
+	ENGINE->dispatchMainThread([this]()
+	{
+		if(GAME->interface() != this || !makingTurn || !adventureInt)
+			return;
+
+		logGlobal->info("AutoHeroes v0.8: automation finished; resuming native End Turn flow");
+		adventureInt->getAdventureShortcuts().continueEndTurnAfterAutoHeroes();
+	});
 }
 
 void CPlayerInterface::onAutoHeroMovementFinished(const CGHeroInstance * hero)
