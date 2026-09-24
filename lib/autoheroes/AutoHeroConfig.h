@@ -39,6 +39,12 @@ enum class CombatPolicy
 	ALLOW_SMALL_LOSSES
 };
 
+enum class DecisionPolicy
+{
+	ASK_HUMAN,
+	AUTO_ACCEPT
+};
+
 struct HeroConfig
 {
 	bool enabled = false;
@@ -48,6 +54,9 @@ struct HeroConfig
 	/// -1 means unlimited. Otherwise valid range is 0..7.
 	int maxForeignFactionSlots = 0;
 	CombatPolicy combatPolicy = CombatPolicy::SAFE_ONLY;
+	DecisionPolicy decisionPolicy = DecisionPolicy::ASK_HUMAN;
+	/// If false, AutoHeroes must not intentionally visit map objects that teach secondary skills.
+	bool allowSecondarySkillLearning = false;
 	int goldReserve = 10000;
 	/// 0 means unlimited.
 	int movementRadius = 0;

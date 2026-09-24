@@ -23,12 +23,16 @@ class CAutoHeroWindow : public CWindowObject
 	std::shared_ptr<CButton> recruitmentButton;
 	std::shared_ptr<CButton> foreignSlotsButton;
 	std::shared_ptr<CButton> combatButton;
+	std::shared_ptr<CButton> decisionButton;
+	std::shared_ptr<CButton> skillLearningButton;
 
 	void updatePriorityLabels();
 	void movePriority(AutoHeroes::Action action, int delta);
 	void updateRecruitmentButton();
 	void updateForeignSlotsButton();
 	void updateCombatButton();
+	void updateDecisionButton();
+	void updateSkillLearningButton();
 	void persistSettings();
 	void saveAndClose();
 	void saveAndRun();

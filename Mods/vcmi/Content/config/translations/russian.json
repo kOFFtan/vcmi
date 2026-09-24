@@ -1120,5 +1120,14 @@
 	"vcmi.autoHeroes.foreignSlots": "Чужих слотов",
 	"vcmi.autoHeroes.foreignSlotsHelp": "Максимальное число слотов армии с существами чужих фракций.",
 	"vcmi.autoHeroes.foreignSlotsNone": "Нет",
-	"vcmi.autoHeroes.foreignSlotsUnlimited": "Без ограничений"
+	"vcmi.autoHeroes.foreignSlotsUnlimited": "Без ограничений",
+	"vcmi.autoHeroes.decisions": "Диалоги с выбором",
+	"vcmi.autoHeroes.decisionsHelp": "Кто принимает решения в окнах с вариантами во время автохода.",
+	"vcmi.autoHeroes.decisionsHuman": "Решает игрок",
+	"vcmi.autoHeroes.decisionsAuto": "Авто: Да / 1-й вариант",
+	"vcmi.autoHeroes.skillLearning": "Изучение вторичных навыков",
+	"vcmi.autoHeroes.skillLearningHelp": "Разрешать автогерою посещать обучающие объекты, которые могут выдать вторичный навык. По умолчанию запрещено.",
+	"vcmi.autoHeroes.skillLearningAllow": "Разрешено",
+	"vcmi.autoHeroes.skillLearningBlock": "Запрещено",
+	"vcmi.autoHeroes.infoAuto": "Информационные сообщения без выбора во время автохода закрываются автоматически"
 }

@@ -79,17 +79,36 @@ const CGHeroInstance * AutoHeroController::activeHero() const
 	return owner.cb ? owner.cb->getHero(*activeHeroId) : nullptr;
 }
 
+AutoHeroes::DecisionPolicy AutoHeroController::decisionPolicy() const
+{
+	const auto * hero = activeHero();
+	return hero ? AutoHeroes::readHeroConfig(hero->id).decisionPolicy : AutoHeroes::DecisionPolicy::ASK_HUMAN;
+}
+
+bool AutoHeroController::allowsSecondarySkillLearning() const
+{
+	const auto * hero = activeHero();
+	return hero && AutoHeroes::readHeroConfig(hero->id).allowSecondarySkillLearning;
+}
+
+void AutoHeroController::onDialogResolved()
+{
+	if(!running)
+		return;
+	waitingForDialog = false;
+}
+
 bool AutoHeroController::start()
 {
 	if(running)
 	{
-		logGlobal->warn("AutoHeroes v0.6: controller is already running");
+		logGlobal->warn("AutoHeroes v0.7: controller is already running");
 		return false;
 	}
 
 	if(!owner.makingTurn || owner.isHeroMoving() || owner.showingDialog->isBusy())
 	{
-		logGlobal->warn("AutoHeroes v0.6: cannot start while turn, movement or dialog state is busy");
+		logGlobal->warn("AutoHeroes v0.7: cannot start while turn, movement or dialog state is busy");
 		return false;
 	}
 
@@ -106,7 +125,7 @@ bool AutoHeroController::start()
 
 	if(heroQueue.empty())
 	{
-		logGlobal->info("AutoHeroes v0.6: no enabled hero with movement points is available");
+		logGlobal->info("AutoHeroes v0.7: no enabled hero with movement points is available");
 		return false;
 	}
 
@@ -116,7 +135,7 @@ bool AutoHeroController::start()
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
-	logGlobal->info("AutoHeroes v0.6: starting local controller for %d configured heroes", static_cast<int>(heroQueue.size()));
+	logGlobal->info("AutoHeroes v0.7: starting local controller for %d configured heroes", static_cast<int>(heroQueue.size()));
 	process();
 	return true;
 }
@@ -124,7 +143,7 @@ bool AutoHeroController::start()
 void AutoHeroController::cancel()
 {
 	if(running)
-		logGlobal->info("AutoHeroes v0.6: local controller stopped");
+		logGlobal->info("AutoHeroes v0.7: local controller stopped");
 
 	running = false;
 	waitingForMovement = false;
@@ -161,7 +180,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		|| hero->movementPointsRemaining() < movementStartPoints;
 	if(!moved)
 	{
-		logGlobal->warn("AutoHeroes v0.6: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
+		logGlobal->warn("AutoHeroes v0.7: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
 		advanceHero();
 		return;
 	}
@@ -214,7 +233,7 @@ void AutoHeroController::process()
 		// Safety valve for maps that keep producing the same revisitable target.
 		if(stepsForCurrentHero >= 24)
 		{
-			logGlobal->warn("AutoHeroes v0.6: step limit reached for hero %s", hero->getNameTextID());
+			logGlobal->warn("AutoHeroes v0.7: step limit reached for hero %s", hero->getNameTextID());
 			advanceHero();
 			continue;
 		}
@@ -222,11 +241,11 @@ void AutoHeroController::process()
 		if(startNextAction(hero))
 			return;
 
-		logGlobal->info("AutoHeroes v0.6: no MVP target found for hero %s", hero->getNameTextID());
+		logGlobal->info("AutoHeroes v0.7: no MVP target found for hero %s", hero->getNameTextID());
 		advanceHero();
 	}
 
-	logGlobal->info("AutoHeroes v0.6: configured heroes finished; human turn remains active");
+	logGlobal->info("AutoHeroes v0.7: configured heroes finished; human turn remains active");
 	cancel();
 }
 
@@ -285,7 +304,7 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 	++stepsForCurrentHero;
 	waitingForMovement = true;
 
-	logGlobal->info("AutoHeroes v0.6: moving hero %s from %s to %s", hero->getNameTextID(), movementStartPosition.toString(), destination.toString());
+	logGlobal->info("AutoHeroes v0.7: moving hero %s from %s to %s", hero->getNameTextID(), movementStartPosition.toString(), destination.toString());
 	owner.moveHero(hero, path);
 
 	if(!owner.isHeroMoving())
@@ -320,6 +339,8 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 				for(const auto * object : owner.cb->getVisitableObjs(tile))
 				{
 					if(!isMvpCollectTarget(object))
+						continue;
+					if(object->wasVisited(hero))
 						continue;
 
 					const int3 destination = object->visitablePos();

@@ -121,6 +121,8 @@ JsonNode serializeHeroConfig(const HeroConfig & config)
 	node["movementRadius"].Integer() = std::max(0, config.movementRadius);
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
+	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
+	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
 
 	switch(config.combatPolicy)
 	{
@@ -151,11 +153,15 @@ HeroConfig deserializeHeroConfig(const JsonNode & node)
 	result.goldReserve = std::max(0, readInt(node, "goldReserve", 10000));
 	result.movementRadius = std::max(0, readInt(node, "movementRadius", 0));
 	result.maxForeignFactionSlots = std::clamp(readInt(node, "maxForeignFactionSlots", 0), -1, 7);
+	result.allowSecondarySkillLearning = readBool(node, "allowSecondarySkillLearning", false);
 
 	const std::string recruitment = readString(node, "recruitmentScope", "heroFactionOnly");
 	result.recruitmentScope = recruitment == "unrestricted"
 		? RecruitmentScope::UNRESTRICTED
 		: RecruitmentScope::HERO_FACTION_ONLY;
+
+	const std::string decision = readString(node, "decisionPolicy", "askHuman");
+	result.decisionPolicy = decision == "autoAccept" ? DecisionPolicy::AUTO_ACCEPT : DecisionPolicy::ASK_HUMAN;
 
 	const std::string combat = readString(node, "combatPolicy", "safeOnly");
 	if(combat == "disabled")
@@ -220,6 +226,8 @@ void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
 	node["movementRadius"].Integer() = std::max(0, config.movementRadius);
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
+	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
+	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
 
 	switch(config.combatPolicy)
 	{

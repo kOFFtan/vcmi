@@ -17,6 +17,7 @@
 #include "CServerHandler.h"
 #include "HeroMovementController.h"
 #include "PlayerLocalState.h"
+#include "../lib/autoheroes/AutoHeroConfig.h"
 
 #include "adventureMap/AdventureMapInterface.h"
 #include "adventureMap/CInGameConsole.h"
@@ -1028,6 +1029,12 @@ void CPlayerInterface::showInfoDialog(EInfoWindowMode type, const std::string &t
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 
+	if(autoHeroController && autoHeroController->isRunning())
+	{
+		logGlobal->info("AutoHeroes v0.7: informational dialog auto-dismissed during automation");
+		return;
+	}
+
 	bool autoTryHover = settings["gameTweaks"]["infoBarPick"].Bool() && type == EInfoWindowMode::AUTO;
 	auto timer = type == EInfoWindowMode::INFO ? 3000 : 4500; //Implement long info windows like in HD mod
 
@@ -1090,6 +1097,12 @@ void CPlayerInterface::showInfoDialog(const std::string & text, std::shared_ptr<
 void CPlayerInterface::showInfoDialog(const std::string &text, const std::vector<std::shared_ptr<CComponent>> & components, int soundID)
 {
 	LOG_TRACE_PARAMS(logGlobal, "player=%s, text=%s, is GAME->interface()=%d", playerID % text % (this==GAME->interface()));
+
+	if(autoHeroController && autoHeroController->isRunning())
+	{
+		logGlobal->info("AutoHeroes v0.7: local informational dialog auto-dismissed during automation");
+		return;
+	}
 	if (settings["session"]["autoSkip"].Bool() && !ENGINE->isKeyboardShiftDown())
 	{
 		return;
@@ -1145,6 +1158,23 @@ void CPlayerInterface::showYesNoDialog(const std::string &text, CFunctionList<vo
 void CPlayerInterface::showBlockingDialog(const std::string &text, const std::vector<Component> &components, QueryID askID, const int soundID, bool selection, bool cancel, bool safeToAutoaccept)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->isRunning()
+		&& autoHeroController->decisionPolicy() == AutoHeroes::DecisionPolicy::AUTO_ACCEPT)
+	{
+		if(selection && !components.empty())
+		{
+			logGlobal->info("AutoHeroes v0.7: automatically choosing first option in blocking dialog");
+			cb->selectionMade(0, askID);
+			return;
+		}
+		if(!selection && cancel)
+		{
+			logGlobal->info("AutoHeroes v0.7: automatically accepting yes/no dialog");
+			cb->selectionMade(1, askID);
+			return;
+		}
+	}
 	waitWhileDialog();
 	closeActiveLevelUpDialog();
 
@@ -1397,6 +1427,8 @@ void CPlayerInterface::queryResolved(QueryID queryID)
 	if(wasFront)
 	{
 		showingDialog->setFree();
+		if(autoHeroController)
+			autoHeroController->onDialogResolved();
 		if(wasLevelUpDialog)
 		{
 			levelUpChainPendingContinuation = true;

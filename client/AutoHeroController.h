@@ -20,6 +20,7 @@ namespace AutoHeroes
 {
 
 enum class Action;
+enum class DecisionPolicy;
 struct HeroConfig;
 
 }
@@ -59,5 +60,8 @@ public:
 	void cancel();
 	void update();
 	void onHeroMovementFinished(const CGHeroInstance * hero);
+	void onDialogResolved();
 	bool isRunning() const { return running; }
+	AutoHeroes::DecisionPolicy decisionPolicy() const;
+	bool allowsSecondarySkillLearning() const;
 };

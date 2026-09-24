@@ -1350,5 +1350,14 @@
 	"vcmi.autoHeroes.foreignSlots": "Foreign slots",
 	"vcmi.autoHeroes.foreignSlotsHelp": "Maximum number of army slots that may contain creatures from foreign factions.",
 	"vcmi.autoHeroes.foreignSlotsNone": "None",
-	"vcmi.autoHeroes.foreignSlotsUnlimited": "Unlimited"
+	"vcmi.autoHeroes.foreignSlotsUnlimited": "Unlimited",
+	"vcmi.autoHeroes.decisions": "Choice dialogs",
+	"vcmi.autoHeroes.decisionsHelp": "Who resolves choice dialogs while AutoHeroes is running.",
+	"vcmi.autoHeroes.decisionsHuman": "Ask player",
+	"vcmi.autoHeroes.decisionsAuto": "Auto: Yes / first option",
+	"vcmi.autoHeroes.skillLearning": "Secondary skill learning",
+	"vcmi.autoHeroes.skillLearningHelp": "Allow AutoHeroes to intentionally visit learning objects that may grant a secondary skill. Disabled by default.",
+	"vcmi.autoHeroes.skillLearningAllow": "Allowed",
+	"vcmi.autoHeroes.skillLearningBlock": "Blocked",
+	"vcmi.autoHeroes.infoAuto": "Informational messages without a choice are dismissed automatically during AutoHeroes"
 }
