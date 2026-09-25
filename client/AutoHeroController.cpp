@@ -177,6 +177,8 @@ void AutoHeroController::onNewTurn()
 
 	const int currentDay = owner.cb ? owner.cb->getCalendar().getCurrentDay() : -1;
 	const bool firstDayOfWeek = currentDay > 0 && ((currentDay - 1) % 7 == 0);
+	logGlobal->info("AHDBG NEW_TURN day=%d firstDayOfWeek=%d weeklyLocksBefore=%d",
+		currentDay, firstDayOfWeek ? 1 : 0, static_cast<int>(weeklyRecruitTowns.size()));
 	if(firstDayOfWeek)
 	{
 		weeklyRecruitTowns.clear();
@@ -276,9 +278,17 @@ void AutoHeroController::onBattleStarted()
 
 	waitingForBattle = true;
 	waitingForMovement = false;
+	encounterGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget = activeBattleGuard;
-	logGlobal->info("AutoHeroes v1.6.1: battle started for active auto hero; automation paused until battle state is fully resolved");
+	++diagnosticsBattlesStarted;
+	const auto * hero = activeHero();
+	logGlobal->info("AHDBG BATTLE_START hero=%s action=%s guard=%s mp=%d",
+		hero ? hero->getNameTextID() : "<none>",
+		activeAction ? actionName(*activeAction) : "none",
+		activeBattleGuard ? activeBattleGuard->toString() : "<none>",
+		hero ? hero->movementPointsRemaining() : -1);
+	logGlobal->info("AutoHeroes v1.6.2: battle started for active auto hero; automation paused until battle state is fully resolved");
 }
 
 void AutoHeroController::onBattleFinished()
@@ -289,9 +299,15 @@ void AutoHeroController::onBattleFinished()
 	waitingForBattle = false;
 	waitingForMovement = false;
 	waitingForDialog = false;
+	encounterGraceTicks = 0;
 	activeBattleGuard.reset();
 	battleCleanupTicks = 30;
-	logGlobal->info("AutoHeroes v1.6.1: battle finished; waiting for battle state cleanup before resuming");
+	++diagnosticsBattlesFinished;
+	const auto * hero = activeHero();
+	logGlobal->info("AHDBG BATTLE_END hero=%s mp=%d cleanupTicks=%d battles=%d/%d",
+		hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1, battleCleanupTicks,
+		diagnosticsBattlesFinished, diagnosticsBattlesStarted);
+	logGlobal->info("AutoHeroes v1.6.2: battle finished; waiting for battle state cleanup before resuming");
 }
 
 void AutoHeroController::onDialogResolved()
@@ -299,6 +315,10 @@ void AutoHeroController::onDialogResolved()
 	if(!running)
 		return;
 	waitingForDialog = false;
+	const auto * hero = activeHero();
+	logGlobal->info("AHDBG DIALOG_RESOLVED hero=%s action=%s mp=%d encounterGrace=%d",
+		hero ? hero->getNameTextID() : "<none>", activeAction ? actionName(*activeAction) : "none",
+		hero ? hero->movementPointsRemaining() : -1, encounterGraceTicks);
 }
 
 bool AutoHeroController::start(bool endTurnWhenFinished)
@@ -340,6 +360,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	waitingForMovement = false;
 	waitingForDialog = false;
 	waitingForBattle = false;
+	encounterGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
@@ -352,7 +373,18 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	activeAction.reset();
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
-	logGlobal->info("AutoHeroes v1.0: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
+	pendingUpgradeAudit.clear();
+	diagnosticsActions = 0;
+	diagnosticsMoves = 0;
+	diagnosticsBattlesStarted = 0;
+	diagnosticsBattlesFinished = 0;
+	diagnosticsUpgradeRequests = 0;
+	diagnosticsMergeRequests = 0;
+	diagnosticsRecruitAmount = 0;
+	diagnosticsAnomalies = 0;
+	const int currentDay = owner.cb ? owner.cb->getCalendar().getCurrentDay() : -1;
+	logGlobal->info("AHDBG RUN_START day=%d heroes=%d endTurn=%d", currentDay, static_cast<int>(heroQueue.size()), endTurnAfterRun ? 1 : 0);
+	logGlobal->info("AutoHeroes v1.6.2: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
 	process();
 	return true;
 }
@@ -366,6 +398,7 @@ void AutoHeroController::cancel()
 	waitingForMovement = false;
 	waitingForDialog = false;
 	waitingForBattle = false;
+	encounterGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
@@ -379,6 +412,7 @@ void AutoHeroController::cancel()
 	activeAction.reset();
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
+	pendingUpgradeAudit.clear();
 }
 
 void AutoHeroController::update()
@@ -388,6 +422,19 @@ void AutoHeroController::update()
 
 	if(waitingForBattle)
 		return;
+
+	if(encounterGraceTicks > 0)
+	{
+		--encounterGraceTicks;
+		if(encounterGraceTicks == 0)
+		{
+			owner.invalidatePaths();
+			const auto * hero = activeHero();
+			logGlobal->info("AHDBG ENCOUNTER_GRACE_END hero=%s mp=%d waitingDialog=%d",
+				hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1, waitingForDialog ? 1 : 0);
+		}
+		return;
+	}
 
 	if(battleCleanupTicks > 0)
 	{
@@ -411,7 +458,9 @@ void AutoHeroController::update()
 		battleCleanupTicks = 0;
 		battleCleanupTarget.reset();
 		owner.invalidatePaths();
-		logGlobal->info("AutoHeroes v1.6: post-battle state refreshed; resuming automation");
+		const auto * hero = activeHero();
+		logGlobal->info("AHDBG POST_BATTLE_RESUME hero=%s mp=%d", hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1);
+		logGlobal->info("AutoHeroes v1.6.2: post-battle state refreshed; resuming automation");
 		return;
 	}
 
@@ -435,14 +484,20 @@ void AutoHeroController::update()
 
 		if(mergeAfterTownUpgrade)
 		{
+			auditTownUpgradeResults(hero);
+			logArmyState(hero, "post_upgrade");
 			mergeAfterTownUpgrade = false;
 			const int mergeRequests = mergeDuplicateArmyStacks(hero);
 			if(mergeRequests > 0)
 			{
-				townUpgradeDelayTicks = 12;
-				logGlobal->info("AutoHeroes v1.6: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
+				townUpgradeDelayTicks = 20;
+				logGlobal->info("AutoHeroes v1.6.2: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
 				return;
 			}
+		}
+		else
+		{
+			logArmyState(hero, "post_merge");
 		}
 
 		waitingForTownUpgrade = false;
@@ -479,8 +534,13 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 
 	const bool moved = hero->visitablePos() != movementStartPosition
 		|| hero->movementPointsRemaining() < movementStartPoints;
+	logGlobal->info("AHDBG MOVE_FINISH hero=%s action=%s from=%s to=%s mpBefore=%d mpAfter=%d moved=%d",
+		hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none", movementStartPosition.toString(),
+		hero->visitablePos().toString(), movementStartPoints, hero->movementPointsRemaining(), moved ? 1 : 0);
 	if(!moved)
 	{
+		++diagnosticsAnomalies;
+		logGlobal->warn("AHDBG ANOMALY type=no_movement_progress hero=%s action=%s", hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none");
 		logGlobal->warn("AutoHeroes v0.8: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
 		advanceHero();
 		return;
@@ -492,9 +552,9 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		if(upgradeRequests > 0)
 		{
 			waitingForTownUpgrade = true;
-			townUpgradeDelayTicks = 12;
+			townUpgradeDelayTicks = 20;
 			mergeAfterTownUpgrade = true;
-			logGlobal->info("AutoHeroes v1.6: requested %d army upgrades before town recruitment; waiting to merge duplicate upgraded stacks", upgradeRequests);
+			logGlobal->info("AutoHeroes v1.6.2: dispatched %d army upgrade requests before town recruitment; waiting for authoritative server state", upgradeRequests);
 			return;
 		}
 
@@ -502,13 +562,22 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		if(mergeRequests > 0)
 		{
 			waitingForTownUpgrade = true;
-			townUpgradeDelayTicks = 12;
+			townUpgradeDelayTicks = 20;
 			mergeAfterTownUpgrade = false;
-			logGlobal->info("AutoHeroes v1.6: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
+			logGlobal->info("AutoHeroes v1.6.2: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
 			return;
 		}
 
 		recruitAfterTownUpgrades(hero);
+	}
+
+	const bool possibleEncounter = activeAction && (*activeAction == AutoHeroes::Action::FIGHT_NEUTRALS || activeBattleGuard.has_value());
+	if(possibleEncounter)
+	{
+		encounterGraceTicks = 4;
+		logGlobal->info("AHDBG ENCOUNTER_GRACE_START hero=%s action=%s guard=%s ticks=%d",
+			hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
+			activeBattleGuard ? activeBattleGuard->toString() : "<none>", encounterGraceTicks);
 	}
 
 	if(owner.showingDialog->isBusy())
@@ -516,6 +585,9 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		waitingForDialog = true;
 		return;
 	}
+
+	if(possibleEncounter)
+		return;
 
 	process();
 }
@@ -528,6 +600,7 @@ void AutoHeroController::finishRun()
 	waitingForMovement = false;
 	waitingForDialog = false;
 	waitingForBattle = false;
+	encounterGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
@@ -541,8 +614,16 @@ void AutoHeroController::finishRun()
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
 	stepsForCurrentHero = 0;
+	pendingUpgradeAudit.clear();
 
-	logGlobal->info("AutoHeroes v0.8: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
+	if(diagnosticsBattlesStarted != diagnosticsBattlesFinished)
+	{
+		++diagnosticsAnomalies;
+		logGlobal->warn("AHDBG ANOMALY type=battle_count_mismatch started=%d finished=%d", diagnosticsBattlesStarted, diagnosticsBattlesFinished);
+	}
+	logGlobal->info("AHDBG RUN_SUMMARY actions=%d moves=%d battlesStarted=%d battlesFinished=%d upgradeRequests=%d mergeRequests=%d recruited=%d anomalies=%d",
+		diagnosticsActions, diagnosticsMoves, diagnosticsBattlesStarted, diagnosticsBattlesFinished, diagnosticsUpgradeRequests, diagnosticsMergeRequests, diagnosticsRecruitAmount, diagnosticsAnomalies);
+	logGlobal->info("AutoHeroes v1.6.2: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
 	owner.onAutoHeroesFinished(shouldEndTurn);
 }
 
@@ -552,6 +633,8 @@ void AutoHeroController::advanceHero()
 	activeAction.reset();
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
+	encounterGraceTicks = 0;
+	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
 	mergeAfterTownUpgrade = false;
@@ -579,7 +662,19 @@ void AutoHeroController::process()
 	while(heroQueueIndex < heroQueue.size())
 	{
 		if(!activeHeroId)
+		{
 			activeHeroId = heroQueue[heroQueueIndex];
+			const CGHeroInstance * startingHero = activeHero();
+			if(startingHero)
+			{
+				const auto cfg = AutoHeroes::readHeroConfig(startingHero->id);
+				logGlobal->info("AHDBG HERO_START hero=%s id=%d pos=%s mp=%d radius=%d budget=%d combat=%d decision=%d chest=%d secondarySkills=%d",
+					startingHero->getNameTextID(), startingHero->id.getNum(), startingHero->visitablePos().toString(), startingHero->movementPointsRemaining(),
+					cfg.movementRadius, AutoHeroes::recruitmentBudgetPercent(cfg.recruitmentBudget), static_cast<int>(cfg.combatPolicy),
+					static_cast<int>(cfg.decisionPolicy), static_cast<int>(cfg.treasureChestChoice), cfg.allowSecondarySkillLearning ? 1 : 0);
+				logArmyState(startingHero, "hero_start");
+			}
+		}
 
 		const CGHeroInstance * hero = activeHero();
 		if(!hero || hero->isGarrisoned() || hero->movementPointsRemaining() <= 100 || !AutoHeroes::isHeroEnabled(hero->id))
@@ -591,6 +686,8 @@ void AutoHeroController::process()
 		// Safety valve for maps that keep producing the same revisitable target.
 		if(stepsForCurrentHero >= 24)
 		{
+			++diagnosticsAnomalies;
+			logGlobal->warn("AHDBG ANOMALY type=step_limit hero=%s steps=%d", hero->getNameTextID(), stepsForCurrentHero);
 			logGlobal->warn("AutoHeroes v0.8: step limit reached for hero %s", hero->getNameTextID());
 			advanceHero();
 			continue;
@@ -644,6 +741,9 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 			break;
 		}
 
+		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s result=%s target=%s",
+			hero->getNameTextID(), actionName(action), destination ? "TARGET" : "NONE", destination ? destination->toString() : "<none>");
+
 		if(destination)
 		{
 			if(action == AutoHeroes::Action::CAPTURE_OBJECTS)
@@ -686,7 +786,11 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 			if(action == AutoHeroes::Action::FIGHT_NEUTRALS && allowedBattleGuard)
 				activeBattleGuard = allowedBattleGuard;
 
-			logGlobal->info("AutoHeroes v1.6: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
+			++diagnosticsActions;
+			logGlobal->info("AHDBG ACTION_SELECT seq=%d hero=%s action=%s target=%s guarded=%d guard=%s mp=%d",
+				diagnosticsActions, hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? 1 : 0,
+				activeBattleGuard ? activeBattleGuard->toString() : "<none>", hero->movementPointsRemaining());
+			logGlobal->info("AutoHeroes v1.6.2: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
 			if(startMovement(hero, *destination, allowDestinationBattle, allowedBattleGuard))
 				return true;
 			activeAction.reset();
@@ -723,14 +827,20 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 	movementStartPosition = hero->visitablePos();
 	movementStartPoints = hero->movementPointsRemaining();
 	++stepsForCurrentHero;
+	++diagnosticsMoves;
 	waitingForMovement = true;
 
+	logGlobal->info("AHDBG MOVE_REQUEST seq=%d hero=%s action=%s from=%s target=%s mp=%d destinationTurns=%d allowBattle=%d guard=%s",
+		diagnosticsMoves, hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none", movementStartPosition.toString(), destination.toString(),
+		movementStartPoints, destinationTurns, allowDestinationBattle ? 1 : 0, allowedBattleGuard ? allowedBattleGuard->toString() : "<none>");
 	logGlobal->info("AutoHeroes v1.0: moving hero %s from %s to %s (MP=%d, destination turns=%d)", hero->getNameTextID(), movementStartPosition.toString(), destination.toString(), movementStartPoints, destinationTurns);
 	owner.moveHero(hero, path);
 
 	if(!owner.isHeroMoving())
 	{
 		waitingForMovement = false;
+		++diagnosticsAnomalies;
+		logGlobal->warn("AHDBG ANOMALY type=move_not_started hero=%s target=%s", hero->getNameTextID(), destination.toString());
 		return false;
 	}
 
@@ -996,6 +1106,63 @@ void AutoHeroController::lockTownRecruit(const CGHeroInstance * hero, const CGTo
 		hero->getNameTextID(), town->visitablePos().toString());
 }
 
+int AutoHeroController::creatureAmountInArmy(const CGHeroInstance * hero, int creatureId) const
+{
+	if(!hero)
+		return 0;
+
+	int amount = 0;
+	for(const auto & stackEntry : hero->Slots())
+	{
+		if(!stackEntry.second || !stackEntry.second->getCreature())
+			continue;
+		if(stackEntry.second->getCreatureID().getNum() == creatureId)
+			amount += static_cast<int>(stackEntry.second->getCount());
+	}
+	return amount;
+}
+
+void AutoHeroController::logArmyState(const CGHeroInstance * hero, const char * stage) const
+{
+	if(!hero)
+	{
+		logGlobal->warn("AHDBG ARMY_STATE stage=%s hero=<none>", stage);
+		return;
+	}
+
+	logGlobal->info("AHDBG ARMY_STATE stage=%s hero=%s slots=%d mp=%d",
+		stage, hero->getNameTextID(), static_cast<int>(hero->Slots().size()), hero->movementPointsRemaining());
+	int ordinal = 0;
+	for(const auto & stackEntry : hero->Slots())
+	{
+		if(!stackEntry.second || !stackEntry.second->getCreature())
+			continue;
+		logGlobal->info("AHDBG ARMY_STACK stage=%s hero=%s n=%d creature=%d count=%d aiValue=%d",
+			stage, hero->getNameTextID(), ordinal++, stackEntry.second->getCreatureID().getNum(),
+			static_cast<int>(stackEntry.second->getCount()), stackEntry.second->getCreature()->getAIValue());
+	}
+}
+
+void AutoHeroController::auditTownUpgradeResults(const CGHeroInstance * hero)
+{
+	for(const auto & audit : pendingUpgradeAudit)
+	{
+		const int fromAfter = creatureAmountInArmy(hero, audit.fromCreature);
+		const int toAfter = creatureAmountInArmy(hero, audit.toCreature);
+		const bool observed = fromAfter < audit.fromAmountBefore || toAfter > audit.toAmountBefore;
+		logGlobal->info("AHDBG UPGRADE_VERIFY hero=%s from=%d to=%d fromBefore=%d fromAfter=%d toBefore=%d toAfter=%d result=%s",
+			hero ? hero->getNameTextID() : "<none>", audit.fromCreature, audit.toCreature,
+			audit.fromAmountBefore, fromAfter, audit.toAmountBefore, toAfter, observed ? "OBSERVED" : "NOT_OBSERVED");
+		if(!observed)
+		{
+			++diagnosticsAnomalies;
+			logGlobal->warn("AHDBG ANOMALY type=upgrade_not_observed hero=%s from=%d to=%d",
+				hero ? hero->getNameTextID() : "<none>", audit.fromCreature, audit.toCreature);
+		}
+	}
+	pendingUpgradeAudit.clear();
+}
+
 int AutoHeroController::upgradeArmyInCurrentTown(const CGHeroInstance * hero)
 {
 	if(!hero || !owner.cb)
@@ -1012,6 +1179,12 @@ int AutoHeroController::upgradeArmyInCurrentTown(const CGHeroInstance * hero)
 			continue;
 		if(town->getVisitingHero() != hero && town->getGarrisonHero() != hero)
 			return 0;
+
+		pendingUpgradeAudit.clear();
+		logArmyState(hero, "pre_upgrade");
+		const auto resourcesBefore = owner.cb->getResourceAmount();
+		logGlobal->info("AHDBG TOWN_PREP_START hero=%s town=%s gold=%d",
+			hero->getNameTextID(), town->visitablePos().toString(), resourcesBefore[EGameResID::GOLD]);
 
 		int requested = 0;
 		for(const auto & stackEntry : hero->Slots())
@@ -1040,27 +1213,41 @@ int AutoHeroController::upgradeArmyInCurrentTown(const CGHeroInstance * hero)
 			}
 
 			if(!bestUpgrade)
+			{
+				logGlobal->info("AHDBG UPGRADE_CANDIDATE hero=%s creature=%d result=SKIP reason=no_town_upgrade",
+					hero->getNameTextID(), stackEntry.second->getCreatureID().getNum());
 				continue;
+			}
 
-			if(owner.cb->upgradeCreature(hero, stackEntry.first, *bestUpgrade))
+			const int fromId = stackEntry.second->getCreatureID().getNum();
+			const int toId = bestUpgrade->getNum();
+			const bool alreadyAudited = std::any_of(pendingUpgradeAudit.begin(), pendingUpgradeAudit.end(), [&](const UpgradeAudit & item)
 			{
-				++requested;
-				logGlobal->info("AutoHeroes v1.6: town upgrade requested hero=%s fromCreature=%d toCreature=%d",
-					hero->getNameTextID(), stackEntry.second->getCreatureID().getNum(), bestUpgrade->getNum());
-			}
-			else
+				return item.fromCreature == fromId && item.toCreature == toId;
+			});
+			if(!alreadyAudited)
 			{
-				logGlobal->info("AutoHeroes v1.6: town upgrade rejected hero=%s fromCreature=%d toCreature=%d",
-					hero->getNameTextID(), stackEntry.second->getCreatureID().getNum(), bestUpgrade->getNum());
+				pendingUpgradeAudit.push_back({fromId, toId, creatureAmountInArmy(hero, fromId), creatureAmountInArmy(hero, toId)});
 			}
+
+			// CCallback::upgradeCreature is asynchronous with respect to the authoritative
+			// server state. In practice its immediate bool is not a reliable indication
+			// that the upgrade was or was not applied. Dispatch the command, wait for the
+			// network state update, then verify the army before merge/recruitment.
+			const bool immediateResult = owner.cb->upgradeCreature(hero, stackEntry.first, *bestUpgrade);
+			++requested;
+			++diagnosticsUpgradeRequests;
+			logGlobal->info("AHDBG UPGRADE_REQUEST hero=%s from=%d to=%d count=%d immediateReturn=%d status=DISPATCHED",
+				hero->getNameTextID(), fromId, toId, static_cast<int>(stackEntry.second->getCount()), immediateResult ? 1 : 0);
 		}
 
+		logGlobal->info("AHDBG TOWN_UPGRADE_BATCH hero=%s town=%s requests=%d",
+			hero->getNameTextID(), town->visitablePos().toString(), requested);
 		return requested;
 	}
 
 	return 0;
 }
-
 
 int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
 {
@@ -1092,9 +1279,12 @@ int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
 			continue;
 		}
 
-		owner.cb->mergeStacks(hero, hero, stackEntry.first, *destinationSlot);
+		const int immediateResult = owner.cb->mergeStacks(hero, hero, stackEntry.first, *destinationSlot);
 		++requested;
-		logGlobal->info("AutoHeroes v1.6: duplicate army stack merge requested hero=%s creature=%d",
+		++diagnosticsMergeRequests;
+		logGlobal->info("AHDBG MERGE_REQUEST hero=%s creature=%d immediateReturn=%d status=DISPATCHED",
+			hero->getNameTextID(), creature.getNum(), immediateResult);
+		logGlobal->info("AutoHeroes v1.6.2: duplicate army stack merge requested hero=%s creature=%d",
 			hero->getNameTextID(), creature.getNum());
 	}
 
@@ -1107,10 +1297,13 @@ void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 		return;
 
 	const auto config = AutoHeroes::readHeroConfig(hero->id);
+	logArmyState(hero, "pre_recruit");
 	const int recruited = recruitFromCurrentTown(hero, config);
 	if(recruited > 0)
 	{
-		logGlobal->info("AutoHeroes v1.6: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
+		diagnosticsRecruitAmount += recruited;
+		logGlobal->info("AHDBG RECRUIT_BATCH hero=%s intendedAmount=%d", hero->getNameTextID(), recruited);
+		logGlobal->info("AutoHeroes v1.6.2: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
 		owner.closeAllDialogs();
 	}
 }
@@ -1157,6 +1350,8 @@ int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, cons
 			if(stack.second->getType() && stack.second->getCreature()->getFactionID() != hero->getFactionID())
 				++foreignSlots;
 
+		logGlobal->info("AHDBG RECRUIT_START hero=%s town=%s slots=%d totalGold=%d budgetPercent=%d budgetGold=%d",
+			hero->getNameTextID(), town->visitablePos().toString(), static_cast<int>(hero->Slots().size()), totalGold, budgetPercent, budgetGold);
 		logGlobal->info("AutoHeroes v1.2: town recruitment start hero=%s town=%s totalGold=%d budget=%d%% budgetGold=%d order=high-tier-first",
 			hero->getNameTextID(), town->visitablePos().toString(), totalGold, budgetPercent, budgetGold);
 
@@ -1230,6 +1425,8 @@ int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, cons
 			if(creatureType->getFactionID() != hero->getFactionID() && !alreadyHasCreature)
 				++foreignSlots;
 
+			logGlobal->info("AHDBG RECRUIT_REQUEST hero=%s town=%s level=%d creature=%d available=%d count=%d goldCost=%d budgetGoldRemaining=%d",
+				hero->getNameTextID(), town->visitablePos().toString(), levelIndex, creature.getNum(), available, count, goldCost, resources[EGameResID::GOLD]);
 			logGlobal->info("AutoHeroes v1.2 recruit town=%s level=%d creature=%d available=%d count=%d goldCost=%d budgetGoldRemaining=%d result=BUY",
 				town->visitablePos().toString(), levelIndex, creature.getNum(), available, count, goldCost, resources[EGameResID::GOLD]);
 		}
@@ -1237,6 +1434,8 @@ int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, cons
 		if(recruitedTotal > 0)
 			lockTownRecruit(hero, town);
 
+		logGlobal->info("AHDBG RECRUIT_END hero=%s town=%s intendedAmount=%d budgetGoldRemaining=%d weeklyLock=%d",
+			hero->getNameTextID(), town->visitablePos().toString(), recruitedTotal, resources[EGameResID::GOLD], recruitedTotal > 0 ? 1 : 0);
 		logGlobal->info("AutoHeroes v1.2: town recruitment attempt at %s finished, recruited=%d budgetGoldRemaining=%d",
 			town->visitablePos().toString(), recruitedTotal, resources[EGameResID::GOLD]);
 		return recruitedTotal;
@@ -1372,7 +1571,7 @@ std::optional<int3> AutoHeroController::findCaptureTarget(const CGHeroInstance *
 							reason = "path_unsafe";
 
 						logGlobal->info(
-							"AutoHeroes v1.6 neutral town candidate coord=%s withinRadius=%d externalGuard=%d reachable=%d pathFound=%d pathSafe=%d result=%s reason=%s",
+							"AHDBG CAPTURE_CANDIDATE type=neutral_town coord=%s withinRadius=%d externalGuard=%d reachable=%d pathFound=%d pathSafe=%d result=%s reason=%s",
 							destination.toString(), withinRadius ? 1 : 0, externallyGuarded ? 1 : 0,
 							reachable ? 1 : 0, pathFound ? 1 : 0, pathSafe ? 1 : 0,
 							accepted ? "ACCEPT" : "REJECT", reason);

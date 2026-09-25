@@ -44,6 +44,7 @@ class AutoHeroController
 	bool waitingForMovement = false;
 	bool waitingForDialog = false;
 	bool waitingForBattle = false;
+	int encounterGraceTicks = 0;
 	int battleCleanupTicks = 0;
 	std::optional<int3> battleCleanupTarget;
 	bool waitingForTownUpgrade = false;
@@ -62,6 +63,24 @@ class AutoHeroController
 	std::set<ObjectInstanceID> attemptedRecruitTowns;
 	std::set<std::pair<int, int>> weeklyRecruitTowns;
 
+	struct UpgradeAudit
+	{
+		int fromCreature = -1;
+		int toCreature = -1;
+		int fromAmountBefore = 0;
+		int toAmountBefore = 0;
+	};
+	std::vector<UpgradeAudit> pendingUpgradeAudit;
+
+	int diagnosticsActions = 0;
+	int diagnosticsMoves = 0;
+	int diagnosticsBattlesStarted = 0;
+	int diagnosticsBattlesFinished = 0;
+	int diagnosticsUpgradeRequests = 0;
+	int diagnosticsMergeRequests = 0;
+	int diagnosticsRecruitAmount = 0;
+	int diagnosticsAnomalies = 0;
+
 	const CGHeroInstance * activeHero() const;
 	void process();
 	void finishRun();
@@ -75,6 +94,9 @@ class AutoHeroController
 	bool townRecruitLocked(const CGHeroInstance * hero, const CGTownInstance * town) const;
 	void lockTownRecruit(const CGHeroInstance * hero, const CGTownInstance * town);
 	int upgradeArmyInCurrentTown(const CGHeroInstance * hero);
+	void auditTownUpgradeResults(const CGHeroInstance * hero);
+	void logArmyState(const CGHeroInstance * hero, const char * stage) const;
+	int creatureAmountInArmy(const CGHeroInstance * hero, int creatureId) const;
 	int mergeDuplicateArmyStacks(const CGHeroInstance * hero);
 	void recruitAfterTownUpgrades(const CGHeroInstance * hero);
 	int recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);

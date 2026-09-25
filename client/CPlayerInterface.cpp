@@ -740,6 +740,9 @@ void CPlayerInterface::battleStartBefore(const BattleID & battleID, const CCreat
 {
 	if(autoHeroController && autoHeroController->isRunning())
 	{
+		logGlobal->info("AHDBG BATTLE_EVENT phase=before tile=%s hero1=%s hero2=%s activeHero=%s",
+			tile.toString(), hero1 ? hero1->getNameTextID() : "<none>", hero2 ? hero2->getNameTextID() : "<none>",
+			autoHeroController->currentHero() ? autoHeroController->currentHero()->getNameTextID() : "<none>");
 		const CGHeroInstance * activeAutoHero = autoHeroController->currentHero();
 		const bool activeHeroInBattle = activeAutoHero
 			&& ((hero1 && hero1->id == activeAutoHero->id) || (hero2 && hero2->id == activeAutoHero->id));
@@ -762,7 +765,11 @@ void CPlayerInterface::battleStart(const BattleID & battleID, const CCreatureSet
 		&& (autoHeroController->shouldAutoFight(hero1) || autoHeroController->shouldAutoFight(hero2));
 
 	if(autoHeroCombat)
-		logGlobal->info("AutoHeroes v1.0: starting automatic quick combat for safe neutral battle");
+	{
+		logGlobal->info("AHDBG BATTLE_EVENT phase=start mode=auto_quick tile=%s hero1=%s hero2=%s",
+			tile.toString(), hero1 ? hero1->getNameTextID() : "<none>", hero2 ? hero2->getNameTextID() : "<none>");
+		logGlobal->info("AutoHeroes v1.6.2: starting automatic quick combat for safe neutral battle");
+	}
 
 	if (autoHeroCombat || (replayAllowed && useQuickCombat) || forceQuickCombat)
 	{
@@ -912,6 +919,10 @@ void CPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult *
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 	const bool autoHeroBattle = autoHeroController && autoHeroController->isAutoBattleActive();
+	if(autoHeroController && autoHeroController->isRunning())
+		logGlobal->info("AHDBG BATTLE_EVENT phase=end activeHero=%s autoBattle=%d waiting=%d",
+			autoHeroController->currentHero() ? autoHeroController->currentHero()->getNameTextID() : "<none>",
+			autoHeroBattle ? 1 : 0, autoHeroController->isWaitingForBattle() ? 1 : 0);
 	const bool autoHeroWaitingForBattle = autoHeroController && autoHeroController->isWaitingForBattle();
 	if(autoHeroWaitingForBattle)
 	{
@@ -1233,6 +1244,14 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 
+	if(autoHeroController && autoHeroController->isRunning())
+	{
+		const auto * activeHero = autoHeroController->currentHero();
+		logGlobal->info("AHDBG DIALOG_SHOW hero=%s selection=%d cancel=%d safeAuto=%d components=%d text=%s",
+			activeHero ? activeHero->getNameTextID() : "<none>", selection ? 1 : 0, cancel ? 1 : 0, safeToAutoaccept ? 1 : 0,
+			static_cast<int>(components.size()), text);
+	}
+
 	if(autoHeroController && autoHeroController->isRunning()
 		&& autoHeroController->isTreasureChestInteraction()
 		&& selection && components.size() == 2)
@@ -1241,6 +1260,7 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 		// Blocking selection replies are 1-based: 0 means cancel/no selection.
 		// Treasure chest option 1 is gold, option 2 is experience.
 		const int option = takeExperience ? 2 : 1;
+		logGlobal->info("AHDBG DIALOG_REPLY kind=treasure source=auto option=%d reward=%s", option, takeExperience ? "experience" : "gold");
 		logGlobal->info("AutoHeroes v1.4: automatically choosing treasure reward=%s option=%d",
 			takeExperience ? "experience" : "gold", option);
 		cb->selectionMade(option, askID);
@@ -1252,12 +1272,14 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 	{
 		if(selection && !components.empty())
 		{
+			logGlobal->info("AHDBG DIALOG_REPLY kind=selection source=auto option=1");
 			logGlobal->info("AutoHeroes v1.4: automatically choosing first option in blocking dialog");
 			cb->selectionMade(1, askID);
 			return;
 		}
 		if(!selection && cancel)
 		{
+			logGlobal->info("AHDBG DIALOG_REPLY kind=yesno source=auto option=1");
 			logGlobal->info("AutoHeroes v0.7: automatically accepting yes/no dialog");
 			cb->selectionMade(1, askID);
 			return;
