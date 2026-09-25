@@ -1,0 +1,183 @@
+diff --git a/client/AutoHeroController.cpp b/client/AutoHeroController.cpp
+index e048c59..d83459b 100644
+--- a/client/AutoHeroController.cpp
++++ b/client/AutoHeroController.cpp
+@@ -81,6 +81,16 @@ bool isSecondarySkillLearningTarget(const CGObjectInstance * target)
+ 		|| target->ID == Obj::SCHOLAR;
+ }
+ 
++bool isMagicShrineTarget(const CGObjectInstance * target)
++{
++	if(!target)
++		return false;
++
++	return target->ID == Obj::SHRINE_OF_MAGIC_INCANTATION
++		|| target->ID == Obj::SHRINE_OF_MAGIC_GESTURE
++		|| target->ID == Obj::SHRINE_OF_MAGIC_THOUGHT;
++}
++
+ bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLearning)
+ {
+ 	if(!target)
+@@ -288,7 +298,7 @@ void AutoHeroController::onBattleStarted()
+ 		activeAction ? actionName(*activeAction) : "none",
+ 		activeBattleGuard ? activeBattleGuard->toString() : "<none>",
+ 		hero ? hero->movementPointsRemaining() : -1);
+-	logGlobal->info("AutoHeroes v1.6.2: battle started for active auto hero; automation paused until battle state is fully resolved");
++	logGlobal->info("AutoHeroes v1.6.3: battle started for active auto hero; automation paused until battle state is fully resolved");
+ }
+ 
+ void AutoHeroController::onBattleFinished()
+@@ -307,7 +317,7 @@ void AutoHeroController::onBattleFinished()
+ 	logGlobal->info("AHDBG BATTLE_END hero=%s mp=%d cleanupTicks=%d battles=%d/%d",
+ 		hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1, battleCleanupTicks,
+ 		diagnosticsBattlesFinished, diagnosticsBattlesStarted);
+-	logGlobal->info("AutoHeroes v1.6.2: battle finished; waiting for battle state cleanup before resuming");
++	logGlobal->info("AutoHeroes v1.6.3: battle finished; waiting for battle state cleanup before resuming");
+ }
+ 
+ void AutoHeroController::onDialogResolved()
+@@ -384,7 +394,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
+ 	diagnosticsAnomalies = 0;
+ 	const int currentDay = owner.cb ? owner.cb->getCalendar().getCurrentDay() : -1;
+ 	logGlobal->info("AHDBG RUN_START day=%d heroes=%d endTurn=%d", currentDay, static_cast<int>(heroQueue.size()), endTurnAfterRun ? 1 : 0);
+-	logGlobal->info("AutoHeroes v1.6.2: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
++	logGlobal->info("AutoHeroes v1.6.3: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
+ 	process();
+ 	return true;
+ }
+@@ -460,7 +470,7 @@ void AutoHeroController::update()
+ 		owner.invalidatePaths();
+ 		const auto * hero = activeHero();
+ 		logGlobal->info("AHDBG POST_BATTLE_RESUME hero=%s mp=%d", hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1);
+-		logGlobal->info("AutoHeroes v1.6.2: post-battle state refreshed; resuming automation");
++		logGlobal->info("AutoHeroes v1.6.3: post-battle state refreshed; resuming automation");
+ 		return;
+ 	}
+ 
+@@ -491,7 +501,7 @@ void AutoHeroController::update()
+ 			if(mergeRequests > 0)
+ 			{
+ 				townUpgradeDelayTicks = 20;
+-				logGlobal->info("AutoHeroes v1.6.2: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
++				logGlobal->info("AutoHeroes v1.6.3: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
+ 				return;
+ 			}
+ 		}
+@@ -554,7 +564,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
+ 			waitingForTownUpgrade = true;
+ 			townUpgradeDelayTicks = 20;
+ 			mergeAfterTownUpgrade = true;
+-			logGlobal->info("AutoHeroes v1.6.2: dispatched %d army upgrade requests before town recruitment; waiting for authoritative server state", upgradeRequests);
++			logGlobal->info("AutoHeroes v1.6.3: dispatched %d army upgrade requests before town recruitment; waiting for authoritative server state", upgradeRequests);
+ 			return;
+ 		}
+ 
+@@ -564,7 +574,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
+ 			waitingForTownUpgrade = true;
+ 			townUpgradeDelayTicks = 20;
+ 			mergeAfterTownUpgrade = false;
+-			logGlobal->info("AutoHeroes v1.6.2: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
++			logGlobal->info("AutoHeroes v1.6.3: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
+ 			return;
+ 		}
+ 
+@@ -623,7 +633,7 @@ void AutoHeroController::finishRun()
+ 	}
+ 	logGlobal->info("AHDBG RUN_SUMMARY actions=%d moves=%d battlesStarted=%d battlesFinished=%d upgradeRequests=%d mergeRequests=%d recruited=%d anomalies=%d",
+ 		diagnosticsActions, diagnosticsMoves, diagnosticsBattlesStarted, diagnosticsBattlesFinished, diagnosticsUpgradeRequests, diagnosticsMergeRequests, diagnosticsRecruitAmount, diagnosticsAnomalies);
+-	logGlobal->info("AutoHeroes v1.6.2: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
++	logGlobal->info("AutoHeroes v1.6.3: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
+ 	owner.onAutoHeroesFinished(shouldEndTurn);
+ }
+ 
+@@ -790,7 +800,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
+ 			logGlobal->info("AHDBG ACTION_SELECT seq=%d hero=%s action=%s target=%s guarded=%d guard=%s mp=%d",
+ 				diagnosticsActions, hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? 1 : 0,
+ 				activeBattleGuard ? activeBattleGuard->toString() : "<none>", hero->movementPointsRemaining());
+-			logGlobal->info("AutoHeroes v1.6.2: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
++			logGlobal->info("AutoHeroes v1.6.3: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
+ 			if(startMovement(hero, *destination, allowDestinationBattle, allowedBattleGuard))
+ 				return true;
+ 			activeAction.reset();
+@@ -1007,9 +1017,24 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
+ 
+ 				for(const auto * object : owner.cb->getVisitableObjs(tile))
+ 				{
+-					if(!isLevelUpTarget(object, config.allowSecondarySkillLearning) || object->wasVisited(hero))
++					if(!isLevelUpTarget(object, config.allowSecondarySkillLearning))
+ 						continue;
+ 
++					const bool engineVisited = object->wasVisited(hero);
++					const bool shrineVisitorRecorded = isMagicShrineTarget(object)
++						&& hero->visitedObjects.count(object->id) != 0;
++
++					// Shrines are recorded by ChangeObjectVisitors. Use the hero visitor set
++					// directly as an additional source of truth because rewardable-object
++					// wasVisited() semantics can depend on visitMode/limiter settings.
++					if(engineVisited || shrineVisitorRecorded)
++					{
++						if(isMagicShrineTarget(object))
++							logGlobal->info("AHDBG LEVEL_REJECT hero=%s object=%s coord=%s reason=shrine_visited engineVisited=%d heroVisitorRecorded=%d",
++								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString(), engineVisited ? 1 : 0, shrineVisitorRecorded ? 1 : 0);
++						continue;
++					}
++
+ 					if((object->ID == Obj::SCHOOL_OF_MAGIC || object->ID == Obj::SCHOOL_OF_WAR)
+ 						&& owner.cb->getResourceAmount(EGameResID::GOLD) - 1000 < config.goldReserve)
+ 						continue;
+@@ -1028,6 +1053,10 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
+ 					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
+ 						continue;
+ 
++					if(isMagicShrineTarget(object))
++						logGlobal->info("AHDBG LEVEL_CANDIDATE hero=%s object=%s coord=%s result=ACCEPT engineVisited=0 heroVisitorRecorded=0 turns=%d cost=%.1f",
++							hero->getNameTextID(), object->getSubtypeName(), destination.toString(), node->turns, node->cost);
++
+ 					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+ 					{
+ 						best = destination;
+@@ -1284,7 +1313,7 @@ int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
+ 		++diagnosticsMergeRequests;
+ 		logGlobal->info("AHDBG MERGE_REQUEST hero=%s creature=%d immediateReturn=%d status=DISPATCHED",
+ 			hero->getNameTextID(), creature.getNum(), immediateResult);
+-		logGlobal->info("AutoHeroes v1.6.2: duplicate army stack merge requested hero=%s creature=%d",
++		logGlobal->info("AutoHeroes v1.6.3: duplicate army stack merge requested hero=%s creature=%d",
+ 			hero->getNameTextID(), creature.getNum());
+ 	}
+ 
+@@ -1303,7 +1332,7 @@ void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
+ 	{
+ 		diagnosticsRecruitAmount += recruited;
+ 		logGlobal->info("AHDBG RECRUIT_BATCH hero=%s intendedAmount=%d", hero->getNameTextID(), recruited);
+-		logGlobal->info("AutoHeroes v1.6.2: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
++		logGlobal->info("AutoHeroes v1.6.3: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
+ 		owner.closeAllDialogs();
+ 	}
+ }
+diff --git a/client/CPlayerInterface.cpp b/client/CPlayerInterface.cpp
+index d1d22ca..9ea1b10 100644
+--- a/client/CPlayerInterface.cpp
++++ b/client/CPlayerInterface.cpp
+@@ -768,7 +768,7 @@ void CPlayerInterface::battleStart(const BattleID & battleID, const CCreatureSet
+ 	{
+ 		logGlobal->info("AHDBG BATTLE_EVENT phase=start mode=auto_quick tile=%s hero1=%s hero2=%s",
+ 			tile.toString(), hero1 ? hero1->getNameTextID() : "<none>", hero2 ? hero2->getNameTextID() : "<none>");
+-		logGlobal->info("AutoHeroes v1.6.2: starting automatic quick combat for safe neutral battle");
++		logGlobal->info("AutoHeroes v1.6.3: starting automatic quick combat for safe neutral battle");
+ 	}
+ 
+ 	if (autoHeroCombat || (replayAllowed && useQuickCombat) || forceQuickCombat)
+diff --git a/client/windows/CAutoHeroWindow.cpp b/client/windows/CAutoHeroWindow.cpp
+index f107c32..ba3e6c8 100644
+--- a/client/windows/CAutoHeroWindow.cpp
++++ b/client/windows/CAutoHeroWindow.cpp
+@@ -65,7 +65,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
+ 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 82, 668, 202), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+ 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 294, 668, 184), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
+ 
+-	std::string title = tr("vcmi.autoHeroes.title") + " v1.6.2: " + GAME->translator().translate(hero->getNameTextID());
++	std::string title = tr("vcmi.autoHeroes.title") + " v1.6.3: " + GAME->translator().translate(hero->getNameTextID());
+ 	keep(std::make_shared<CLabel>(WIN_W / 2, 20, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 650));
+ 
+ 	auto enabled = keep(std::make_shared<CToggleButton>(
