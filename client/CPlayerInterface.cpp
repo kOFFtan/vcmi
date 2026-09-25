@@ -768,7 +768,7 @@ void CPlayerInterface::battleStart(const BattleID & battleID, const CCreatureSet
 	{
 		logGlobal->info("AHDBG BATTLE_EVENT phase=start mode=auto_quick tile=%s hero1=%s hero2=%s",
 			tile.toString(), hero1 ? hero1->getNameTextID() : "<none>", hero2 ? hero2->getNameTextID() : "<none>");
-		logGlobal->info("AutoHeroes v1.6.2: starting automatic quick combat for safe neutral battle");
+		logGlobal->info("AutoHeroes v1.6.3: starting automatic quick combat for safe neutral battle");
 	}
 
 	if (autoHeroCombat || (replayAllowed && useQuickCombat) || forceQuickCombat)
