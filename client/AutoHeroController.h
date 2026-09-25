@@ -104,6 +104,7 @@ public:
 	int maxForeignFactionSlots() const;
 	bool shouldAutoFight(const CGHeroInstance * hero) const;
 	bool isAutoBattleActive() const;
+	bool isWaitingForBattle() const { return waitingForBattle; }
 	void onBattleStarted();
 	void onBattleFinished();
 	void onNewTurn();

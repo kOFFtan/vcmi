@@ -271,14 +271,14 @@ bool AutoHeroController::isAutoBattleActive() const
 
 void AutoHeroController::onBattleStarted()
 {
-	if(!running || !isAutoBattleActive())
+	if(!running)
 		return;
 
 	waitingForBattle = true;
 	waitingForMovement = false;
 	battleCleanupTicks = 0;
 	battleCleanupTarget = activeBattleGuard;
-	logGlobal->info("AutoHeroes v1.6: battle started; automation paused until battle state is fully resolved");
+	logGlobal->info("AutoHeroes v1.6.1: battle started for active auto hero; automation paused until battle state is fully resolved");
 }
 
 void AutoHeroController::onBattleFinished()
@@ -291,7 +291,7 @@ void AutoHeroController::onBattleFinished()
 	waitingForDialog = false;
 	activeBattleGuard.reset();
 	battleCleanupTicks = 30;
-	logGlobal->info("AutoHeroes v1.6: battle finished; waiting for defeated neutral cleanup before resuming");
+	logGlobal->info("AutoHeroes v1.6.1: battle finished; waiting for battle state cleanup before resuming");
 }
 
 void AutoHeroController::onDialogResolved()

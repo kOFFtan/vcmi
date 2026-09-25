@@ -738,8 +738,14 @@ void CPlayerInterface::buildChanged(const CGTownInstance *town, BuildingID build
 
 void CPlayerInterface::battleStartBefore(const BattleID & battleID, const CCreatureSet *army1, const CCreatureSet *army2, int3 tile, const CGHeroInstance *hero1, const CGHeroInstance *hero2)
 {
-	if(autoHeroController && (autoHeroController->shouldAutoFight(hero1) || autoHeroController->shouldAutoFight(hero2)))
-		autoHeroController->onBattleStarted();
+	if(autoHeroController && autoHeroController->isRunning())
+	{
+		const CGHeroInstance * activeAutoHero = autoHeroController->currentHero();
+		const bool activeHeroInBattle = activeAutoHero
+			&& ((hero1 && hero1->id == activeAutoHero->id) || (hero2 && hero2->id == activeAutoHero->id));
+		if(activeHeroInBattle)
+			autoHeroController->onBattleStarted();
+	}
 
 	movementController->onBattleStarted();
 
@@ -906,11 +912,13 @@ void CPlayerInterface::battleEnd(const BattleID & battleID, const BattleResult *
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 	const bool autoHeroBattle = autoHeroController && autoHeroController->isAutoBattleActive();
-	if(autoHeroBattle)
+	const bool autoHeroWaitingForBattle = autoHeroController && autoHeroController->isWaitingForBattle();
+	if(autoHeroWaitingForBattle)
 	{
-		// battleEnd can arrive after the quick-combat interface has already been
-		// unregistered, so do not tie AutoHeroes resume to autofightingAI state.
-		// Resume on MainGUI after the server has emitted the battle-end event.
+		// Pause/resume is tied to the active AutoHero actually participating in
+		// the battle, not only to battles that were pre-classified for quick combat.
+		// Some map-object dialogs can start a battle after movement has finished,
+		// and in that case guard detection may no longer identify the encounter.
 		ENGINE->dispatchMainThread([this]()
 		{
 			if(autoHeroController)
