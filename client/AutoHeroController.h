@@ -55,7 +55,11 @@ class AutoHeroController
 	bool mergeAfterTownUpgrade = false;
 	bool endTurnAfterRun = false;
 	int transportSettleTicks = 0;
-	bool transportDeliveredThisHero = false;
+	bool transportTownPrep = false;
+	bool pendingTransportDelivery = false;
+	int64_t transportCarrierUnitsBefore = 0;
+	int64_t transportRecipientUnitsBefore = 0;
+	std::optional<ObjectInstanceID> pendingTransportRecipient;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
@@ -117,6 +121,10 @@ class AutoHeroController
 	std::optional<int3> findTransportSourceTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	bool loadTransporterAtCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
 	bool transporterHasCargo(const CGHeroInstance * hero) const;
+	int64_t armyUnitCount(const CGHeroInstance * hero) const;
+	bool recipientCanAcceptTransportArmy(const CGHeroInstance * carrier, const CGHeroInstance * recipient) const;
+	void setTransporterNeedsSource(const CGHeroInstance * hero, bool needsSource);
+	void verifyPendingTransportDelivery();
 	SlotID transporterReserveSlot(const CGHeroInstance * hero) const;
 	bool dispatchTransportArmy(const CGHeroInstance * carrier, const CGHeroInstance * recipient);
 	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false, const std::optional<int3> & allowedBattleGuard = std::nullopt);
@@ -136,7 +144,7 @@ class AutoHeroController
 	void logArmyState(const CGHeroInstance * hero, const char * stage) const;
 	int creatureAmountInArmy(const CGHeroInstance * hero, int creatureId) const;
 	int mergeDuplicateArmyStacks(const CGHeroInstance * hero);
-	void recruitAfterTownUpgrades(const CGHeroInstance * hero);
+	int recruitAfterTownUpgrades(const CGHeroInstance * hero);
 	int recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
 	std::optional<int3> findExploreTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findCaptureTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
