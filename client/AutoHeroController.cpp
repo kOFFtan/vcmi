@@ -634,7 +634,11 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = endTurnWhenFinished;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
@@ -695,7 +699,11 @@ void AutoHeroController::cancel()
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -755,6 +763,7 @@ void AutoHeroController::update()
 		if(transportSettleTicks == 0)
 		{
 			owner.invalidatePaths();
+			verifyPendingTransportDelivery();
 			const auto * hero = activeHero();
 			logGlobal->info("AHDBG TRANSPORT_SETTLED hero=%s", hero ? hero->getNameTextID() : "<none>");
 			process();
@@ -883,7 +892,22 @@ void AutoHeroController::update()
 		}
 
 		waitingForTownUpgrade = false;
-		recruitAfterTownUpgrades(hero);
+		const int recruited = recruitAfterTownUpgrades(hero);
+
+		if(transportTownPrep)
+		{
+			transportTownPrep = false;
+			const bool readyForDelivery = recruited > 0 || transporterHasCargo(hero);
+			setTransporterNeedsSource(hero, !readyForDelivery);
+			transportSettleTicks = recruited > 0 ? 20 : 8;
+			logGlobal->info("AHDBG TRANSPORT_SOURCE_READY hero=%s recruited=%d cargo=%d needsSource=%d settle=%d",
+				hero->getNameTextID(), recruited, transporterHasCargo(hero) ? 1 : 0,
+				readyForDelivery ? 0 : 1, transportSettleTicks);
+			if(owner.showingDialog->isBusy())
+				waitingForDialog = true;
+			return;
+		}
+
 		if(owner.showingDialog->isBusy())
 		{
 			waitingForDialog = true;
@@ -921,10 +945,20 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		hero->visitablePos().toString(), movementStartPoints, hero->movementPointsRemaining(), moved ? 1 : 0);
 	if(!moved)
 	{
+		if(pendingQueryReplies > 0 || querySettleTicks > 0 || waitingForDialog || owner.showingDialog->isBusy())
+		{
+			encounterGraceTicks = std::max(encounterGraceTicks, 24);
+			logGlobal->info("AHDBG MOVE_RETRY_AFTER_QUERY hero=%s action=%s pending=%d settle=%d grace=%d",
+				hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
+				pendingQueryReplies, querySettleTicks, encounterGraceTicks);
+			return;
+		}
+
 		++diagnosticsAnomalies;
 		logGlobal->warn("AHDBG ANOMALY type=no_movement_progress hero=%s action=%s", hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none");
-		logGlobal->warn("AutoHeroes v0.8: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
+		logGlobal->warn("AutoHeroes v1.8.1: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
 		advanceHero();
+		encounterGraceTicks = 24;
 		return;
 	}
 
@@ -964,10 +998,6 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		activeShrineKnownSpellsBefore = 0;
 	}
 
-	const auto movementConfig = AutoHeroes::readHeroConfig(hero->id);
-	if(movementConfig.transporterMode && loadTransporterAtCurrentTown(hero, movementConfig))
-		return;
-
 	if(activeAction && *activeAction == AutoHeroes::Action::RECRUIT_CREATURES)
 	{
 		const int upgradeRequests = upgradeArmyInCurrentTown(hero);
@@ -994,24 +1024,15 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 	}
 
 	const bool possibleEncounter = activeAction && (*activeAction == AutoHeroes::Action::FIGHT_NEUTRALS || activeBattleGuard.has_value());
-	if(possibleEncounter)
-	{
-		encounterGraceTicks = 4;
-		logGlobal->info("AHDBG ENCOUNTER_GRACE_START hero=%s action=%s guard=%s ticks=%d",
-			hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
-			activeBattleGuard ? activeBattleGuard->toString() : "<none>", encounterGraceTicks);
-	}
+	encounterGraceTicks = std::max(encounterGraceTicks, possibleEncounter ? 24 : 18);
+	logGlobal->info("AHDBG POST_ACTION_GRACE hero=%s action=%s guard=%s ticks=%d",
+		hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
+		activeBattleGuard ? activeBattleGuard->toString() : "<none>", encounterGraceTicks);
 
 	if(owner.showingDialog->isBusy())
-	{
 		waitingForDialog = true;
-		return;
-	}
 
-	if(possibleEncounter)
-		return;
-
-	process();
+	return;
 }
 
 void AutoHeroController::finishRun()
@@ -1032,7 +1053,11 @@ void AutoHeroController::finishRun()
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -1099,7 +1124,11 @@ void AutoHeroController::advanceHero()
 	shrineVerifyTicks = 0;
 	encounterGraceTicks = 0;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
@@ -1134,12 +1163,13 @@ void AutoHeroController::process()
 			if(startingHero)
 			{
 				const auto cfg = AutoHeroes::readHeroConfig(startingHero->id);
-				logGlobal->info("AHDBG HERO_START hero=%s id=%d pos=%s mp=%d radius=%d budget=%d recruitLocation=%d combat=%d decision=%d chest=%d secondarySkills=%d transporter=%d sourceTowns=%d targetHero=%d",
+				logGlobal->info("AHDBG HERO_START hero=%s id=%d pos=%s mp=%d radius=%d budget=%d recruitLocation=%d combat=%d decision=%d chest=%d secondarySkills=%d transporter=%d sourceTowns=%d targetHero=%d needsSource=%d",
 					startingHero->getNameTextID(), startingHero->id.getNum(), startingHero->visitablePos().toString(), startingHero->movementPointsRemaining(),
 					cfg.movementRadius, AutoHeroes::recruitmentBudgetPercent(cfg.recruitmentBudget), static_cast<int>(cfg.recruitmentLocation), static_cast<int>(cfg.combatPolicy),
 					static_cast<int>(cfg.decisionPolicy), static_cast<int>(cfg.treasureChestChoice), cfg.allowSecondarySkillLearning ? 1 : 0,
 					cfg.transporterMode ? 1 : 0, static_cast<int>(cfg.transporterSourceTowns.size()),
-					cfg.transporterTargetHero ? cfg.transporterTargetHero->getNum() : -1);
+					cfg.transporterTargetHero ? cfg.transporterTargetHero->getNum() : -1,
+					cfg.transporterNeedsSource ? 1 : 0);
 				logGlobal->info("AHDBG MAGIC_STATE hero=%s hasSpellbook=%d maxSpellLevel=%d knownSpells=%d",
 					startingHero->getNameTextID(), startingHero->hasSpellbook() ? 1 : 0, startingHero->maxSpellLevel(),
 					static_cast<int>(startingHero->getSpellsInSpellbook().size()));
@@ -1169,7 +1199,8 @@ void AutoHeroController::process()
 		if(!hero || hero->isGarrisoned() || hero->movementPointsRemaining() <= 100 || !AutoHeroes::isHeroEnabled(hero->id))
 		{
 			advanceHero();
-			continue;
+			encounterGraceTicks = 24;
+			return;
 		}
 
 		// Safety valve for maps that keep producing the same revisitable target.
@@ -1179,14 +1210,17 @@ void AutoHeroController::process()
 			logGlobal->warn("AHDBG ANOMALY type=step_limit hero=%s steps=%d", hero->getNameTextID(), stepsForCurrentHero);
 			logGlobal->warn("AutoHeroes v0.8: step limit reached for hero %s", hero->getNameTextID());
 			advanceHero();
-			continue;
+			encounterGraceTicks = 24;
+			return;
 		}
 
 		if(startNextAction(hero))
 			return;
 
-		logGlobal->info("AutoHeroes v1.0: no configured target found for hero %s", hero->getNameTextID());
+		logGlobal->info("AutoHeroes v1.8.1: no configured target found for hero %s", hero->getNameTextID());
 		advanceHero();
+		encounterGraceTicks = 24;
+		return;
 	}
 
 	logGlobal->info("AutoHeroes v1.0: configured heroes finished");
@@ -1196,15 +1230,19 @@ void AutoHeroController::process()
 
 bool AutoHeroController::transporterHasCargo(const CGHeroInstance * hero) const
 {
+	return armyUnitCount(hero) > 1;
+}
+
+int64_t AutoHeroController::armyUnitCount(const CGHeroInstance * hero) const
+{
 	if(!hero)
-		return false;
+		return 0;
 
 	int64_t totalUnits = 0;
 	for(const auto & stack : hero->Slots())
 		if(stack.second)
 			totalUnits += static_cast<int64_t>(stack.second->getCount());
-
-	return totalUnits > 1;
+	return totalUnits;
 }
 
 SlotID AutoHeroController::transporterReserveSlot(const CGHeroInstance * hero) const
@@ -1229,25 +1267,109 @@ SlotID AutoHeroController::transporterReserveSlot(const CGHeroInstance * hero) c
 	return best;
 }
 
+bool AutoHeroController::recipientCanAcceptTransportArmy(const CGHeroInstance * carrier, const CGHeroInstance * recipient) const
+{
+	if(!carrier || !recipient)
+		return false;
+
+	const SlotID reserveSlot = transporterReserveSlot(carrier);
+	for(const auto & stack : carrier->Slots())
+	{
+		if(!stack.second || !stack.second->getCreature())
+			continue;
+
+		const int64_t leaveBehind = stack.first == reserveSlot ? 1 : 0;
+		if(static_cast<int64_t>(stack.second->getCount()) <= leaveBehind)
+			continue;
+
+		if(recipient->getSlotFor(stack.second->getCreatureID()).validSlot())
+			return true;
+	}
+	return false;
+}
+
+void AutoHeroController::setTransporterNeedsSource(const CGHeroInstance * hero, bool needsSource)
+{
+	if(!hero)
+		return;
+
+	auto config = AutoHeroes::readHeroConfig(hero->id);
+	if(config.transporterNeedsSource == needsSource)
+		return;
+
+	config.transporterNeedsSource = needsSource;
+	AutoHeroes::writeHeroConfig(hero->id, config);
+	logGlobal->info("AHDBG TRANSPORT_PHASE hero=%s phase=%s",
+		hero->getNameTextID(), needsSource ? "SOURCE" : "RECIPIENT");
+}
+
+void AutoHeroController::verifyPendingTransportDelivery()
+{
+	if(!pendingTransportDelivery)
+		return;
+
+	const auto * carrier = activeHero();
+	const auto * recipient = pendingTransportRecipient && owner.cb
+		? owner.cb->getHero(*pendingTransportRecipient)
+		: nullptr;
+
+	const int64_t carrierAfter = armyUnitCount(carrier);
+	const int64_t recipientAfter = armyUnitCount(recipient);
+	const int64_t movedFromCarrier = std::max<int64_t>(0, transportCarrierUnitsBefore - carrierAfter);
+	const int64_t gainedByRecipient = std::max<int64_t>(0, recipientAfter - transportRecipientUnitsBefore);
+	const bool observed = carrier && recipient && movedFromCarrier > 0 && gainedByRecipient > 0;
+
+	logGlobal->info("AHDBG TRANSPORT_VERIFY hero=%s recipient=%s carrierBefore=%lld carrierAfter=%lld recipientBefore=%lld recipientAfter=%lld moved=%lld gained=%lld result=%s",
+		carrier ? carrier->getNameTextID() : "<none>", recipient ? recipient->getNameTextID() : "<none>",
+		static_cast<long long>(transportCarrierUnitsBefore), static_cast<long long>(carrierAfter),
+		static_cast<long long>(transportRecipientUnitsBefore), static_cast<long long>(recipientAfter),
+		static_cast<long long>(movedFromCarrier), static_cast<long long>(gainedByRecipient),
+		observed ? "SUCCESS" : "NO_TRANSFER");
+
+	if(carrier)
+	{
+		// Even a failed/partial exchange returns to the source once. There the
+		// transporter can upgrade incompatible stacks before trying again.
+		setTransporterNeedsSource(carrier, true);
+	}
+
+	if(!observed)
+		logGlobal->warn("AHDBG TRANSPORT_BLOCKED hero=%s reason=recipient_slots_or_incompatible_stacks",
+			carrier ? carrier->getNameTextID() : "<none>");
+
+	pendingTransportDelivery = false;
+	pendingTransportRecipient.reset();
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+}
+
 bool AutoHeroController::dispatchTransportArmy(const CGHeroInstance * carrier, const CGHeroInstance * recipient)
 {
 	if(!carrier || !recipient || !owner.cb || !transporterHasCargo(carrier))
 		return false;
 
+	if(!recipientCanAcceptTransportArmy(carrier, recipient))
+	{
+		logGlobal->info("AHDBG TRANSPORT_UNLOAD hero=%s recipient=%s status=BLOCKED reason=no_compatible_recipient_slot",
+			carrier->getNameTextID(), recipient->getNameTextID());
+		return false;
+	}
+
 	const SlotID reserveSlot = transporterReserveSlot(carrier);
 	if(!reserveSlot.validSlot())
 		return false;
 
-	int64_t unitsBefore = 0;
-	for(const auto & stack : carrier->Slots())
-		if(stack.second)
-			unitsBefore += static_cast<int64_t>(stack.second->getCount());
+	transportCarrierUnitsBefore = armyUnitCount(carrier);
+	transportRecipientUnitsBefore = armyUnitCount(recipient);
+	pendingTransportRecipient = recipient->id;
+	pendingTransportDelivery = true;
 
-	logGlobal->info("AHDBG TRANSPORT_UNLOAD hero=%s recipient=%s unitsBefore=%lld reserveSlot=%d status=DISPATCHED",
-		carrier->getNameTextID(), recipient->getNameTextID(), static_cast<long long>(unitsBefore), reserveSlot.getNum());
+	logGlobal->info("AHDBG TRANSPORT_UNLOAD hero=%s recipient=%s unitsBefore=%lld recipientUnitsBefore=%lld reserveSlot=%d status=DISPATCHED",
+		carrier->getNameTextID(), recipient->getNameTextID(),
+		static_cast<long long>(transportCarrierUnitsBefore), static_cast<long long>(transportRecipientUnitsBefore),
+		reserveSlot.getNum());
 
 	owner.cb->bulkMoveArmy(carrier->id, recipient->id, reserveSlot);
-	transportDeliveredThisHero = true;
 	transportSettleTicks = 20;
 	return true;
 }
@@ -1269,20 +1391,30 @@ bool AutoHeroController::loadTransporterAtCurrentTown(const CGHeroInstance * her
 	recruitConfig.recruitmentLocation = AutoHeroes::RecruitmentLocation::TOWN_ONLY;
 
 	const int recruited = recruitFromCurrentTown(hero, recruitConfig);
-	if(recruited <= 0)
+	if(recruited > 0)
 	{
-		logGlobal->info("AHDBG TRANSPORT_LOAD hero=%s town=%s result=EMPTY_OR_BLOCKED",
+		diagnosticsRecruitAmount += recruited;
+		setTransporterNeedsSource(hero, false);
+		transportSettleTicks = 20;
+		logGlobal->info("AHDBG TRANSPORT_LOAD hero=%s town=%s intendedAmount=%d cargo=%d status=DISPATCHED",
+			hero->getNameTextID(), town->visitablePos().toString(), recruited, transporterHasCargo(hero) ? 1 : 0);
+		owner.closeAllDialogs();
+		return true;
+	}
+
+	if(transporterHasCargo(hero))
+	{
+		// The hero has physically visited the source and town upgrades/merges
+		// were already attempted. Existing troops may now be delivered.
+		setTransporterNeedsSource(hero, false);
+		logGlobal->info("AHDBG TRANSPORT_LOAD hero=%s town=%s intendedAmount=0 cargo=1 result=READY_EXISTING_ARMY",
 			hero->getNameTextID(), town->visitablePos().toString());
 		return false;
 	}
 
-	diagnosticsRecruitAmount += recruited;
-	transportDeliveredThisHero = false;
-	transportSettleTicks = 20;
-	logGlobal->info("AHDBG TRANSPORT_LOAD hero=%s town=%s intendedAmount=%d status=DISPATCHED",
-		hero->getNameTextID(), town->visitablePos().toString(), recruited);
-	owner.closeAllDialogs();
-	return true;
+	logGlobal->info("AHDBG TRANSPORT_LOAD hero=%s town=%s intendedAmount=0 cargo=0 result=WAIT_FOR_RECRUITS",
+		hero->getNameTextID(), town->visitablePos().toString());
+	return false;
 }
 
 std::optional<int3> AutoHeroController::findTransportSourceTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
@@ -1364,54 +1496,102 @@ bool AutoHeroController::startTransporterAction(const CGHeroInstance * hero, con
 		return false;
 	}
 
-	const bool hasCargo = transporterHasCargo(hero);
-	if(hasCargo && !transportDeliveredThisHero)
+	if(config.transporterNeedsSource)
 	{
-		if(hero->getVisitedTown() && recipient->getVisitedTown() && hero->getVisitedTown() == recipient->getVisitedTown())
+		const auto * currentTown = hero->getVisitedTown();
+		if(currentTown && config.transporterSourceTowns.contains(currentTown->id))
 		{
-			logGlobal->info("AHDBG TRANSPORT_TARGET hero=%s recipient=%s reason=same_town",
-				hero->getNameTextID(), recipient->getNameTextID());
-			return dispatchTransportArmy(hero, recipient);
+			const int upgradeRequests = upgradeArmyInCurrentTown(hero);
+			if(upgradeRequests > 0)
+			{
+				waitingForTownUpgrade = true;
+				townUpgradeDelayTicks = 20;
+				mergeAfterTownUpgrade = true;
+				transportTownPrep = true;
+				logGlobal->info("AHDBG TRANSPORT_SOURCE_PREP hero=%s town=%s upgrades=%d phase=UPGRADE_WAIT",
+					hero->getNameTextID(), currentTown->visitablePos().toString(), upgradeRequests);
+				return true;
+			}
+
+			const int mergeRequests = mergeDuplicateArmyStacks(hero);
+			if(mergeRequests > 0)
+			{
+				waitingForTownUpgrade = true;
+				townUpgradeDelayTicks = 20;
+				mergeAfterTownUpgrade = false;
+				transportTownPrep = true;
+				logGlobal->info("AHDBG TRANSPORT_SOURCE_PREP hero=%s town=%s merges=%d phase=MERGE_WAIT",
+					hero->getNameTextID(), currentTown->visitablePos().toString(), mergeRequests);
+				return true;
+			}
+
+			if(loadTransporterAtCurrentTown(hero, config))
+				return true;
+
+			const auto refreshed = AutoHeroes::readHeroConfig(hero->id);
+			if(!refreshed.transporterNeedsSource)
+				return startTransporterAction(hero, refreshed);
+
+			logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=source_empty town=%s",
+				hero->getNameTextID(), currentTown->visitablePos().toString());
+			return false;
 		}
 
-		const int3 destination = recipient->visitablePos();
-		const auto paths = owner.getPathsInfo(hero);
-		if(!paths)
-			return false;
-
-		const CGPathNode * node = paths->getPathInfo(destination);
-		CGPath path;
-		if(!node || !node->reachable()
-			|| !paths->getPath(path, destination, EPathfindingLayer::AUTO)
-			|| !pathIsSafeForMvp(hero, path, destination, false))
+		const auto source = findTransportSourceTown(hero, config);
+		if(!source)
 		{
-			logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s recipient=%s reason=no_safe_route",
-				hero->getNameTextID(), recipient->getNameTextID());
+			logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=no_source_route", hero->getNameTextID());
 			return false;
 		}
 
 		activeAction.reset();
-		logGlobal->info("AHDBG TRANSPORT_TARGET hero=%s recipient=%s coord=%s turns=%d cost=%.1f teleport=%d",
-			hero->getNameTextID(), recipient->getNameTextID(), destination.toString(), node->turns, node->cost,
-			pathUsesTeleport(path) ? 1 : 0);
-		return startMovement(hero, destination, false);
+		logGlobal->info("AHDBG TRANSPORT_TO_SOURCE hero=%s target=%s phase=SOURCE",
+			hero->getNameTextID(), source->toString());
+		return startMovement(hero, *source, false);
 	}
 
-	if(loadTransporterAtCurrentTown(hero, config))
-		return true;
-
-	const auto source = findTransportSourceTown(hero, config);
-	if(!source)
+	if(!transporterHasCargo(hero))
 	{
-		logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=no_source_route_or_recruits cargo=%d deliveredThisRun=%d",
-			hero->getNameTextID(), hasCargo ? 1 : 0, transportDeliveredThisHero ? 1 : 0);
+		setTransporterNeedsSource(hero, true);
+		logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=no_cargo_after_source", hero->getNameTextID());
+		return false;
+	}
+
+	if(!recipientCanAcceptTransportArmy(hero, recipient))
+	{
+		logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s recipient=%s reason=recipient_full_or_incompatible cargo=%lld",
+			hero->getNameTextID(), recipient->getNameTextID(), static_cast<long long>(armyUnitCount(hero)));
+		return false;
+	}
+
+	if(hero->getVisitedTown() && recipient->getVisitedTown() && hero->getVisitedTown() == recipient->getVisitedTown())
+	{
+		logGlobal->info("AHDBG TRANSPORT_TARGET hero=%s recipient=%s reason=same_town",
+			hero->getNameTextID(), recipient->getNameTextID());
+		return dispatchTransportArmy(hero, recipient);
+	}
+
+	const int3 destination = recipient->visitablePos();
+	const auto paths = owner.getPathsInfo(hero);
+	if(!paths)
+		return false;
+
+	const CGPathNode * node = paths->getPathInfo(destination);
+	CGPath path;
+	if(!node || !node->reachable()
+		|| !paths->getPath(path, destination, EPathfindingLayer::AUTO)
+		|| !pathIsSafeForMvp(hero, path, destination, false))
+	{
+		logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s recipient=%s reason=no_safe_route",
+			hero->getNameTextID(), recipient->getNameTextID());
 		return false;
 	}
 
 	activeAction.reset();
-	logGlobal->info("AHDBG TRANSPORT_TO_SOURCE hero=%s target=%s cargo=%d deliveredThisRun=%d",
-		hero->getNameTextID(), source->toString(), hasCargo ? 1 : 0, transportDeliveredThisHero ? 1 : 0);
-	return startMovement(hero, *source, false);
+	logGlobal->info("AHDBG TRANSPORT_TARGET hero=%s recipient=%s coord=%s turns=%d cost=%.1f teleport=%d phase=RECIPIENT",
+		hero->getNameTextID(), recipient->getNameTextID(), destination.toString(), node->turns, node->cost,
+		pathUsesTeleport(path) ? 1 : 0);
+	return startMovement(hero, destination, false);
 }
 
 bool AutoHeroController::handleTransportHeroExchange(ObjectInstanceID hero1, ObjectInstanceID hero2, QueryID query)
@@ -1438,6 +1618,11 @@ bool AutoHeroController::handleTransportHeroExchange(ObjectInstanceID hero1, Obj
 
 	onQueryOpened();
 	const bool dispatched = dispatchTransportArmy(carrier, recipient);
+	if(!dispatched)
+	{
+		setTransporterNeedsSource(carrier, true);
+		transportSettleTicks = 8;
+	}
 	logGlobal->info("AHDBG TRANSPORT_EXCHANGE hero=%s recipient=%s query=%d dispatched=%d",
 		carrier->getNameTextID(), recipient->getNameTextID(), query.getNum(), dispatched ? 1 : 0);
 	owner.cb->selectionMade(0, query);
@@ -2629,12 +2814,14 @@ int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
 	return requested;
 }
 
-void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
+int AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 {
 	if(!hero)
-		return;
+		return 0;
 
-	const auto config = AutoHeroes::readHeroConfig(hero->id);
+	auto config = AutoHeroes::readHeroConfig(hero->id);
+	if(config.transporterMode && transportTownPrep)
+		config.recruitmentLocation = AutoHeroes::RecruitmentLocation::TOWN_ONLY;
 	logArmyState(hero, "pre_recruit");
 	const int recruited = recruitFromCurrentTown(hero, config);
 	if(recruited > 0)
@@ -2644,6 +2831,7 @@ void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 		logGlobal->info("AutoHeroes v1.7.2: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
 		owner.closeAllDialogs();
 	}
+	return recruited;
 }
 
 int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config)
@@ -3223,7 +3411,9 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
 	for(const auto & node : path.nodes)
 	{
 		const bool isDestination = node.coord == destination;
-		const int3 guardingCreature = owner.cb->guardingCreaturePosition(node.coord);
+		const int3 guardingCreature = owner.cb->isVisible(node.coord)
+			? owner.cb->guardingCreaturePosition(node.coord)
+			: int3(-1, -1, -1);
 		const bool isAllowedGuard = allowedBattleGuard && node.coord == *allowedBattleGuard;
 		const bool guardedByAllowedGuard = allowedBattleGuard && guardingCreature == *allowedBattleGuard;
 		const bool allowedCombatNode = allowDestinationBattle && (isDestination || isAllowedGuard || guardedByAllowedGuard);

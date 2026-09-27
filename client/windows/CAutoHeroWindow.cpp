@@ -66,7 +66,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 82, 668, 202), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 294, 668, 274), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 
-	std::string title = tr("vcmi.autoHeroes.title") + " v1.8: " + GAME->translator().translate(hero->getNameTextID());
+	std::string title = tr("vcmi.autoHeroes.title") + " v1.8.1: " + GAME->translator().translate(hero->getNameTextID());
 	keep(std::make_shared<CLabel>(WIN_W / 2, 20, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 650));
 
 	auto enabled = keep(std::make_shared<CToggleButton>(
@@ -230,7 +230,12 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 		Point(24, 493),
 		AnimationPath::builtin("sysopchk.def"),
 		CButton::tooltip(tr("vcmi.autoHeroes.transporterHelp")),
-		[this](bool selected){ draft.transporterMode = selected; }));
+		[this](bool selected)
+		{
+			draft.transporterMode = selected;
+			if(selected)
+				draft.transporterNeedsSource = true;
+		}));
 	transporter->setSelectedSilent(draft.transporterMode);
 	keep(std::make_shared<CLabel>(62, 500, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.transporter")));
 
@@ -252,6 +257,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 				draft.transporterSourceTowns.insert(town->id);
 			else
 				draft.transporterSourceTowns.erase(town->id);
+			draft.transporterNeedsSource = true;
 			updateTransporterTownButton();
 		}));
 
@@ -451,6 +457,7 @@ void CAutoHeroWindow::cycleTransporterTarget()
 	if(candidates.empty())
 	{
 		draft.transporterTargetHero.reset();
+		draft.transporterNeedsSource = true;
 		updateTransporterTargetButton();
 		return;
 	}
@@ -458,6 +465,7 @@ void CAutoHeroWindow::cycleTransporterTarget()
 	if(!draft.transporterTargetHero)
 	{
 		draft.transporterTargetHero = candidates.front()->id;
+		draft.transporterNeedsSource = true;
 		updateTransporterTargetButton();
 		return;
 	}
@@ -472,16 +480,18 @@ void CAutoHeroWindow::cycleTransporterTarget()
 	else
 		draft.transporterTargetHero = (*it)->id;
 
+	draft.transporterNeedsSource = true;
 	updateTransporterTargetButton();
 }
 
 void CAutoHeroWindow::persistSettings()
 {
-	logGlobal->info("AHDBG CONFIG_SAVE hero=%s enabled=%d recruitScope=%d recruitLocation=%d budget=%d combat=%d decision=%d transporter=%d sourceTowns=%d targetHero=%d",
+	logGlobal->info("AHDBG CONFIG_SAVE hero=%s enabled=%d recruitScope=%d recruitLocation=%d budget=%d combat=%d decision=%d transporter=%d sourceTowns=%d targetHero=%d needsSource=%d",
 		hero->getNameTextID(), draft.enabled ? 1 : 0, static_cast<int>(draft.recruitmentScope),
 		static_cast<int>(draft.recruitmentLocation), AutoHeroes::recruitmentBudgetPercent(draft.recruitmentBudget),
 		static_cast<int>(draft.combatPolicy), static_cast<int>(draft.decisionPolicy), draft.transporterMode ? 1 : 0,
-		static_cast<int>(draft.transporterSourceTowns.size()), draft.transporterTargetHero ? draft.transporterTargetHero->getNum() : -1);
+		static_cast<int>(draft.transporterSourceTowns.size()), draft.transporterTargetHero ? draft.transporterTargetHero->getNum() : -1,
+		draft.transporterNeedsSource ? 1 : 0);
 	AutoHeroes::writeHeroConfig(hero->id, draft);
 	if(GAME->interface() && GAME->interface()->localState)
 		GAME->interface()->localState->saveState();

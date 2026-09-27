@@ -87,6 +87,9 @@ struct HeroConfig
 	bool transporterMode = false;
 	std::set<ObjectInstanceID> transporterSourceTowns;
 	std::optional<ObjectInstanceID> transporterTargetHero;
+	/// Persistent delivery phase. True means the next leg must visit a source
+	/// town before another recipient chase.
+	bool transporterNeedsSource = true;
 
 	/// If false, AutoHeroes must not intentionally visit map objects that teach secondary skills.
 	bool allowSecondarySkillLearning = false;
