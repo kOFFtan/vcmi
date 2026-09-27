@@ -1605,6 +1605,10 @@ void CPlayerInterface::showHeroExchange(ObjectInstanceID hero1, ObjectInstanceID
 void CPlayerInterface::heroExchangeStarted(ObjectInstanceID hero1, ObjectInstanceID hero2, QueryID query)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->handleTransportHeroExchange(hero1, hero2, query))
+		return;
+
 	ENGINE->windows().createAndPushWindow<CExchangeWindow>(hero1, hero2, query);
 }
 
