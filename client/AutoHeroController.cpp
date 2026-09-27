@@ -23,8 +23,6 @@
 #include "../lib/mapObjects/army/CArmedInstance.h"
 #include "../lib/pathfinder/CGPathNode.h"
 
-#include <vcmi/spells/Spell.h>
-
 namespace
 {
 
@@ -122,6 +120,19 @@ std::optional<SpellID> magicShrineSpell(const CGObjectInstance * target)
 	}
 
 	return std::nullopt;
+}
+
+int magicShrineLevel(const CGObjectInstance * target)
+{
+	if(!target)
+		return -1;
+	if(target->ID == Obj::SHRINE_OF_MAGIC_INCANTATION)
+		return 1;
+	if(target->ID == Obj::SHRINE_OF_MAGIC_GESTURE)
+		return 2;
+	if(target->ID == Obj::SHRINE_OF_MAGIC_THOUGHT)
+		return 3;
+	return -1;
 }
 
 bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLearning)
@@ -1375,11 +1386,7 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 					if(isMagicShrineTarget(object))
 					{
 						shrineSpell = magicShrineSpell(object);
-						if(shrineSpell)
-						{
-							if(const auto * spell = shrineSpell->toSpell())
-								shrineSpellLevel = spell->getLevel();
-						}
+						shrineSpellLevel = magicShrineLevel(object);
 
 						if(attemptedShrines.count(object->id))
 						{
