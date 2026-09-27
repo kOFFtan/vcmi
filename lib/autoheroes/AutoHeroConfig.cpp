@@ -145,6 +145,7 @@ JsonNode serializeHeroConfig(const HeroConfig & config)
 	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
 	node["transporterMode"].Bool() = config.transporterMode;
+	node["transporterNeedsSource"].Bool() = config.transporterNeedsSource;
 	JsonNode & transporterTowns = node["transporterSourceTowns"];
 	transporterTowns.Vector().clear();
 	for(const auto & townId : config.transporterSourceTowns)
@@ -192,6 +193,7 @@ HeroConfig deserializeHeroConfig(const JsonNode & node)
 	result.maxForeignFactionSlots = std::clamp(readInt(node, "maxForeignFactionSlots", 0), -1, 7);
 	result.allowSecondarySkillLearning = readBool(node, "allowSecondarySkillLearning", false);
 	result.transporterMode = readBool(node, "transporterMode", false);
+	result.transporterNeedsSource = readBool(node, "transporterNeedsSource", true);
 
 	const JsonNode & transporterTowns = node["transporterSourceTowns"];
 	if(transporterTowns.isVector())
@@ -299,6 +301,7 @@ void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
 	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
 	node["transporterMode"].Bool() = config.transporterMode;
+	node["transporterNeedsSource"].Bool() = config.transporterNeedsSource;
 	JsonNode & transporterTowns = node["transporterSourceTowns"];
 	transporterTowns.Vector().clear();
 	for(const auto & townId : config.transporterSourceTowns)
