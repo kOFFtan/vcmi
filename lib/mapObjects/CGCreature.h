@@ -65,6 +65,10 @@ public:
 	CreatureID getCreatureID() const;
 	const CCreature * getCreature() const;
 	TQuantity getJoiningAmount() const;
+	/// Returns the same encounter decision used by onHeroVisit: FIGHT, FLEE,
+	/// JOIN_FOR_FREE, or a positive gold price. Exposed for deterministic
+	/// human-interface automation so it can answer the exact server query safely.
+	int getEncounterAction(const CGHeroInstance * hero, bool allowJoin = true) const { return takenAction(hero, allowJoin); }
 
 	//stack formation depends on position,
 	bool containsUpgradedStack() const;

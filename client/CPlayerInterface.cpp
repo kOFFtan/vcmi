@@ -1287,6 +1287,22 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 		return;
 	}
 
+	if(autoHeroController && autoHeroController->isRunning() && !selection && cancel)
+	{
+		if(const auto encounterReply = autoHeroController->autoCreatureEncounterReply())
+		{
+			logGlobal->info("AHDBG DIALOG_REPLY kind=creature_encounter source=auto option=%d", *encounterReply);
+			cb->selectionMade(*encounterReply, askID);
+			return;
+		}
+		if(autoHeroController->shouldAutoAcceptBorderGuard())
+		{
+			logGlobal->info("AHDBG DIALOG_REPLY kind=border_guard source=auto option=1");
+			cb->selectionMade(1, askID);
+			return;
+		}
+	}
+
 	if(autoHeroController && autoHeroController->isRunning()
 		&& autoHeroController->decisionPolicy() == AutoHeroes::DecisionPolicy::AUTO_ACCEPT)
 	{
@@ -1510,6 +1526,11 @@ void CPlayerInterface::moveHero( const CGHeroInstance *h, const CGPath& path )
 void CPlayerInterface::showGarrisonDialog(const CArmedInstance * up, const CGHeroInstance * down, bool removableUnits, QueryID queryID, const MetaString & customTitle)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+	if(autoHeroController && autoHeroController->isRunning() && queryID >= 0)
+	{
+		autoHeroController->onQueryOpened();
+		logGlobal->info("AHDBG QUERY_BARRIER source=garrison state=OPEN query=%d", queryID.getNum());
+	}
 	auto onEnd = [this, queryID](){ cb->selectionMade(0, queryID); };
 
 	if (movementController->isHeroMovingThroughGarrison(down, up))

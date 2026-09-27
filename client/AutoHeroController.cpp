@@ -15,6 +15,8 @@
 #include "../lib/ConditionalWait.h"
 #include "../lib/callback/CCallback.h"
 #include "../lib/mapObjects/CGHeroInstance.h"
+#include "../lib/mapObjects/CGCreature.h"
+#include "../lib/mapObjects/Quest.h"
 #include "../lib/mapObjects/CGObjectInstance.h"
 #include "../lib/mapObjects/CGDwelling.h"
 #include "../lib/mapObjects/CGTownInstance.h"
@@ -251,6 +253,20 @@ const CGHeroInstance * AutoHeroController::activeHero() const
 	return owner.cb ? owner.cb->getHero(*activeHeroId) : nullptr;
 }
 
+bool AutoHeroController::hasMultipleAutoHeroes() const
+{
+	return heroQueue.size() > 1;
+}
+
+bool AutoHeroController::isCombatHero(const CGHeroInstance * hero) const
+{
+	if(!hero)
+		return false;
+	if(!hasMultipleAutoHeroes())
+		return true;
+	return combatHeroId && hero->id == *combatHeroId;
+}
+
 AutoHeroes::DecisionPolicy AutoHeroController::decisionPolicy() const
 {
 	const auto * hero = activeHero();
@@ -434,6 +450,92 @@ bool AutoHeroController::shouldAutoAcceptDwellingRecruit() const
 	return false;
 }
 
+std::optional<int> AutoHeroController::autoCreatureEncounterReply() const
+{
+	if(!running || !owner.cb || !activeBattleGuard)
+		return std::nullopt;
+
+	const auto * hero = activeHero();
+	if(!hero)
+		return std::nullopt;
+
+	const CGCreature * monster = nullptr;
+	for(const auto * object : owner.cb->getVisitableObjs(*activeBattleGuard))
+	{
+		if(object && object->ID == Obj::MONSTER)
+		{
+			monster = dynamic_cast<const CGCreature *>(object);
+			if(monster)
+				break;
+		}
+	}
+	if(!monster)
+		return std::nullopt;
+
+	// After refusing an impossible join VCMI may immediately ask whether to
+	// pursue the same stack. This is still the combat target selected by AutoHeroes.
+	if(monster->refusedJoining)
+	{
+		logGlobal->info("AHDBG CREATURE_ENCOUNTER hero=%s type=pursue_after_refused_join reply=1",
+			hero->getNameTextID());
+		return 1;
+	}
+
+	const int action = monster->getEncounterAction(hero);
+	if(action == CGCreature::FIGHT)
+		return std::nullopt;
+
+	if(action == CGCreature::FLEE)
+	{
+		logGlobal->info("AHDBG CREATURE_ENCOUNTER hero=%s type=flee reply=1 reason=selected_combat_target",
+			hero->getNameTextID());
+		return 1;
+	}
+
+	const CreatureID creature = monster->getCreatureID();
+	const bool slotAvailable = hero->getSlotFor(creature).validSlot();
+	const auto cfg = AutoHeroes::readHeroConfig(hero->id);
+	const int totalGold = owner.cb->getResourceAmount(EGameResID::GOLD);
+	const int spendableGold = static_cast<int>((static_cast<int64_t>(totalGold)
+		* AutoHeroes::recruitmentBudgetPercent(cfg.recruitmentBudget)) / 100);
+	const bool affordable = action <= spendableGold;
+	const bool accept = slotAvailable && affordable;
+
+	logGlobal->info(
+		"AHDBG CREATURE_ENCOUNTER hero=%s type=join creature=%d cost=%d gold=%d spendable=%d slotAvailable=%d reply=%d",
+		hero->getNameTextID(), creature.getNum(), std::max(0, action), totalGold, spendableGold,
+		slotAvailable ? 1 : 0, accept ? 1 : 0);
+
+	return accept ? 1 : 0;
+}
+
+bool AutoHeroController::shouldAutoAcceptBorderGuard() const
+{
+	if(!running || !owner.cb)
+		return false;
+
+	const auto * hero = activeHero();
+	if(!hero)
+		return false;
+
+	for(const auto * object : owner.cb->getVisitableObjs(hero->visitablePos()))
+	{
+		const auto * guard = dynamic_cast<const QuestGuard *>(object);
+		if(!guard)
+			continue;
+		const auto & quest = guard->getQuest();
+		if(quest.mission.requiredKeys.empty() || quest.isCompleted)
+			continue;
+		if(!guard->checkQuest(hero))
+			continue;
+
+		logGlobal->info("AHDBG BORDER_GUARD_REPLY hero=%s objectId=%d coord=%s reply=1",
+			hero->getNameTextID(), guard->id.getNum(), guard->visitablePos().toString());
+		return true;
+	}
+	return false;
+}
+
 bool AutoHeroController::start(bool endTurnWhenFinished)
 {
 	if(running)
@@ -467,6 +569,30 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	{
 		logGlobal->info("AutoHeroes v0.8: no enabled hero with movement points is available");
 		return false;
+	}
+
+	std::sort(heroQueue.begin(), heroQueue.end(), [this](ObjectInstanceID lhs, ObjectInstanceID rhs)
+	{
+		const auto * left = owner.cb ? owner.cb->getHero(lhs) : nullptr;
+		const auto * right = owner.cb ? owner.cb->getHero(rhs) : nullptr;
+		const ui64 leftStrength = left ? left->estimateHeroCombatValue() : 0;
+		const ui64 rightStrength = right ? right->estimateHeroCombatValue() : 0;
+		if(leftStrength != rightStrength)
+			return leftStrength > rightStrength;
+		return lhs.getNum() < rhs.getNum();
+	});
+	combatHeroId = heroQueue.front();
+
+	if(heroQueue.size() > 1)
+	{
+		for(const auto heroId : heroQueue)
+		{
+			const auto * roleHero = owner.cb ? owner.cb->getHero(heroId) : nullptr;
+			if(roleHero)
+				logGlobal->info("AHDBG HERO_ROLE hero=%s strength=%llu role=%s",
+					roleHero->getNameTextID(), static_cast<unsigned long long>(roleHero->estimateHeroCombatValue()),
+					heroId == *combatHeroId ? "combat_scout" : "collector_visitor");
+		}
 	}
 
 	running = true;
@@ -1015,6 +1141,8 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 {
 	const AutoHeroes::HeroConfig config = AutoHeroes::readHeroConfig(hero->id);
 	const auto paths = owner.getPathsInfo(hero);
+	const bool splitRoles = hasMultipleAutoHeroes();
+	const bool combatRole = isCombatHero(hero);
 
 	struct ActionCandidate
 	{
@@ -1089,6 +1217,17 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		if(!config.allows(action))
 			continue;
 
+		if(splitRoles)
+		{
+			if(combatRole && (action == AutoHeroes::Action::COLLECT_RESOURCES || action == AutoHeroes::Action::LEVEL_UP))
+				continue;
+			if(!combatRole && (action == AutoHeroes::Action::RECRUIT_CREATURES
+				|| action == AutoHeroes::Action::EXPLORE
+				|| action == AutoHeroes::Action::CAPTURE_OBJECTS
+				|| action == AutoHeroes::Action::FIGHT_NEUTRALS))
+				continue;
+		}
+
 		ActionCandidate candidate;
 		candidate.action = action;
 		candidate.priorityRank = static_cast<int>(rank) + 1;
@@ -1101,15 +1240,19 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		case AutoHeroes::Action::LEVEL_UP:
 		{
 			const auto levelTarget = findLevelTarget(hero, config);
+			const auto keymasterTarget = findKeymasterTarget(hero, config);
 			const auto spellbookTarget = findSpellbookTarget(hero, config);
-			if(spellbookTarget && (!levelTarget || destinationIsBetter(*spellbookTarget, *levelTarget)))
+			std::optional<int3> usefulTarget = levelTarget;
+			if(keymasterTarget && (!usefulTarget || destinationIsBetter(*keymasterTarget, *usefulTarget)))
+				usefulTarget = keymasterTarget;
+			if(spellbookTarget && (!usefulTarget || destinationIsBetter(*spellbookTarget, *usefulTarget)))
 			{
 				candidate.destination = spellbookTarget;
 				candidate.spellbook = true;
 			}
 			else
 			{
-				candidate.destination = levelTarget;
+				candidate.destination = usefulTarget;
 			}
 			break;
 		}
@@ -1120,8 +1263,15 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 			candidate.destination = findExploreTarget(hero, config);
 			break;
 		case AutoHeroes::Action::CAPTURE_OBJECTS:
-			candidate.destination = findCaptureTarget(hero, config);
+		{
+			const auto captureTarget = findCaptureTarget(hero, config);
+			const auto borderGuardTarget = findUnlockedBorderGuardTarget(hero, config);
+			if(borderGuardTarget && (!captureTarget || destinationIsBetter(*borderGuardTarget, *captureTarget)))
+				candidate.destination = borderGuardTarget;
+			else
+				candidate.destination = captureTarget;
 			break;
+		}
 		case AutoHeroes::Action::FIGHT_NEUTRALS:
 			candidate.destination = findFightTarget(hero, config);
 			candidate.allowDestinationBattle = candidate.destination.has_value();
@@ -1384,6 +1534,11 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 					const int3 guardingCreature = owner.cb->guardingCreaturePosition(destination);
 					if(guardingCreature != int3(-1, -1, -1))
 					{
+						if(hasMultipleAutoHeroes() && !isCombatHero(hero))
+						{
+							logResourceReject("guarded_reserved_for_combat_hero");
+							continue;
+						}
 						if(config.combatPolicy == AutoHeroes::CombatPolicy::DISABLED)
 						{
 							logResourceReject("guarded_combat_disabled");
@@ -1610,6 +1765,112 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 				}
 			}
 
+	return best;
+}
+
+std::optional<int3> AutoHeroController::findKeymasterTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	const auto paths = owner.getPathsInfo(hero);
+	const auto player = owner.cb ? owner.cb->getPlayerID() : std::optional<PlayerColor>{};
+	if(!paths || !player)
+		return std::nullopt;
+
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					const auto * tent = dynamic_cast<const KeymasterTent *>(object);
+					if(!tent || tent->wasVisited(*player))
+						continue;
+
+					const int3 destination = tent->visitablePos();
+					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+						continue;
+					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+						continue;
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO)
+						|| !pathIsSafeForMvp(hero, path, destination, false))
+						continue;
+
+					logGlobal->info("AHDBG KEYMASTER_CANDIDATE hero=%s objectId=%d color=%d coord=%s turns=%d cost=%.1f result=ACCEPT",
+						hero->getNameTextID(), tent->id.getNum(), tent->subID.getNum(), destination.toString(), node->turns, node->cost);
+
+					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+					{
+						best = destination;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
+	return best;
+}
+
+std::optional<int3> AutoHeroController::findUnlockedBorderGuardTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	const auto paths = owner.getPathsInfo(hero);
+	if(!paths)
+		return std::nullopt;
+
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					const auto * guard = dynamic_cast<const QuestGuard *>(object);
+					if(!guard)
+						continue;
+					const auto & quest = guard->getQuest();
+					if(quest.mission.requiredKeys.empty() || quest.isCompleted || !guard->checkQuest(hero))
+						continue;
+
+					const int3 destination = guard->visitablePos();
+					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+						continue;
+					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+						continue;
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO)
+						|| !pathIsSafeForMvp(hero, path, destination, false))
+						continue;
+
+					logGlobal->info("AHDBG BORDER_GUARD_CANDIDATE hero=%s objectId=%d coord=%s turns=%d cost=%.1f result=ACCEPT",
+						hero->getNameTextID(), guard->id.getNum(), destination.toString(), node->turns, node->cost);
+
+					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+					{
+						best = destination;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
 	return best;
 }
 

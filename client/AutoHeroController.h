@@ -56,6 +56,7 @@ class AutoHeroController
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
+	std::optional<ObjectInstanceID> combatHeroId;
 	std::optional<AutoHeroes::Action> activeAction;
 	std::optional<int3> activeBattleGuard;
 	bool activeCollectTreasureChest = false;
@@ -102,6 +103,8 @@ class AutoHeroController
 	int diagnosticsAnomalies = 0;
 
 	const CGHeroInstance * activeHero() const;
+	bool hasMultipleAutoHeroes() const;
+	bool isCombatHero(const CGHeroInstance * hero) const;
 	void process();
 	void finishRun();
 	void advanceHero();
@@ -109,6 +112,8 @@ class AutoHeroController
 	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false, const std::optional<int3> & allowedBattleGuard = std::nullopt);
 	std::optional<int3> findCollectTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	std::optional<int3> findKeymasterTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	std::optional<int3> findUnlockedBorderGuardTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findSpellbookTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	bool requestSpellbookPurchase(const CGHeroInstance * hero, const CGTownInstance * town);
 	void evaluatePendingShrineResult(const CGHeroInstance * hero);
@@ -140,6 +145,8 @@ public:
 	void onQueryOpened();
 	void onQueryReplyApplied();
 	bool shouldAutoAcceptDwellingRecruit() const;
+	std::optional<int> autoCreatureEncounterReply() const;
+	bool shouldAutoAcceptBorderGuard() const;
 	bool isRunning() const { return running; }
 	AutoHeroes::DecisionPolicy decisionPolicy() const;
 	AutoHeroes::TreasureChestChoice treasureChestChoice() const;
