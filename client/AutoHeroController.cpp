@@ -313,6 +313,12 @@ AutoHeroes::RecruitmentScope AutoHeroController::recruitmentScope() const
 	return hero ? AutoHeroes::readHeroConfig(hero->id).recruitmentScope : AutoHeroes::RecruitmentScope::HERO_FACTION_ONLY;
 }
 
+AutoHeroes::RecruitmentLocation AutoHeroController::recruitmentLocation() const
+{
+	const auto * hero = activeHero();
+	return hero ? AutoHeroes::readHeroConfig(hero->id).recruitmentLocation : AutoHeroes::RecruitmentLocation::ANYWHERE;
+}
+
 int AutoHeroController::maxForeignFactionSlots() const
 {
 	const auto * hero = activeHero();
@@ -428,6 +434,9 @@ bool AutoHeroController::shouldAutoAcceptDwellingRecruit() const
 		return false;
 
 	const auto config = AutoHeroes::readHeroConfig(hero->id);
+	if(config.recruitmentLocation == AutoHeroes::RecruitmentLocation::TOWN_ONLY)
+		return false;
+
 	for(const auto * object : owner.cb->getVisitableObjs(hero->visitablePos()))
 	{
 		const auto * dwelling = dynamic_cast<const CGDwelling *>(object);
@@ -1080,9 +1089,9 @@ void AutoHeroController::process()
 			if(startingHero)
 			{
 				const auto cfg = AutoHeroes::readHeroConfig(startingHero->id);
-				logGlobal->info("AHDBG HERO_START hero=%s id=%d pos=%s mp=%d radius=%d budget=%d combat=%d decision=%d chest=%d secondarySkills=%d",
+				logGlobal->info("AHDBG HERO_START hero=%s id=%d pos=%s mp=%d radius=%d budget=%d recruitLocation=%d combat=%d decision=%d chest=%d secondarySkills=%d",
 					startingHero->getNameTextID(), startingHero->id.getNum(), startingHero->visitablePos().toString(), startingHero->movementPointsRemaining(),
-					cfg.movementRadius, AutoHeroes::recruitmentBudgetPercent(cfg.recruitmentBudget), static_cast<int>(cfg.combatPolicy),
+					cfg.movementRadius, AutoHeroes::recruitmentBudgetPercent(cfg.recruitmentBudget), static_cast<int>(cfg.recruitmentLocation), static_cast<int>(cfg.combatPolicy),
 					static_cast<int>(cfg.decisionPolicy), static_cast<int>(cfg.treasureChestChoice), cfg.allowSecondarySkillLearning ? 1 : 0);
 				logGlobal->info("AHDBG MAGIC_STATE hero=%s hasSpellbook=%d maxSpellLevel=%d knownSpells=%d",
 					startingHero->getNameTextID(), startingHero->hasSpellbook() ? 1 : 0, startingHero->maxSpellLevel(),
@@ -2286,6 +2295,11 @@ int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, cons
 {
 	if(!hero || !owner.cb)
 		return 0;
+	if(config.recruitmentLocation == AutoHeroes::RecruitmentLocation::FIELD_ONLY)
+	{
+		logGlobal->info("AHDBG RECRUIT_LOCATION_SKIP hero=%s source=town mode=field_only", hero->getNameTextID());
+		return 0;
+	}
 
 	const auto player = owner.cb->getPlayerID();
 	if(!player)
@@ -2445,6 +2459,8 @@ std::optional<int3> AutoHeroController::findRecruitTarget(const CGHeroInstance *
 
 					if(town)
 					{
+						if(config.recruitmentLocation == AutoHeroes::RecruitmentLocation::FIELD_ONLY)
+							continue;
 						if(town->getOwner() != *player || attemptedRecruitTowns.count(town->id) || townRecruitLocked(hero, town))
 							continue;
 						if(!dwellingHasUsefulRecruit(town, hero, config))
@@ -2452,6 +2468,8 @@ std::optional<int3> AutoHeroController::findRecruitTarget(const CGHeroInstance *
 					}
 					else
 					{
+						if(config.recruitmentLocation == AutoHeroes::RecruitmentLocation::TOWN_ONLY)
+							continue;
 						if(!isRecruitTarget(object, *player) || !dwellingHasUsefulRecruit(dwelling, hero, config))
 							continue;
 					}
