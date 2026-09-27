@@ -1377,7 +1377,7 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 						shrineSpell = magicShrineSpell(object);
 						if(shrineSpell)
 						{
-							if(const auto * spell = shrineSpell->toEntity(LIBRARY))
+							if(const auto * spell = shrineSpell->toSpell())
 								shrineSpellLevel = spell->getLevel();
 						}
 
