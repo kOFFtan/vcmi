@@ -1163,12 +1163,13 @@ void AutoHeroController::process()
 			if(startingHero)
 			{
 				const auto cfg = AutoHeroes::readHeroConfig(startingHero->id);
-				logGlobal->info("AHDBG HERO_START hero=%s id=%d pos=%s mp=%d radius=%d budget=%d recruitLocation=%d combat=%d decision=%d chest=%d secondarySkills=%d transporter=%d sourceTowns=%d targetHero=%d",
+				logGlobal->info("AHDBG HERO_START hero=%s id=%d pos=%s mp=%d radius=%d budget=%d recruitLocation=%d combat=%d decision=%d chest=%d secondarySkills=%d transporter=%d sourceTowns=%d targetHero=%d needsSource=%d",
 					startingHero->getNameTextID(), startingHero->id.getNum(), startingHero->visitablePos().toString(), startingHero->movementPointsRemaining(),
 					cfg.movementRadius, AutoHeroes::recruitmentBudgetPercent(cfg.recruitmentBudget), static_cast<int>(cfg.recruitmentLocation), static_cast<int>(cfg.combatPolicy),
 					static_cast<int>(cfg.decisionPolicy), static_cast<int>(cfg.treasureChestChoice), cfg.allowSecondarySkillLearning ? 1 : 0,
 					cfg.transporterMode ? 1 : 0, static_cast<int>(cfg.transporterSourceTowns.size()),
-					cfg.transporterTargetHero ? cfg.transporterTargetHero->getNum() : -1);
+					cfg.transporterTargetHero ? cfg.transporterTargetHero->getNum() : -1,
+					cfg.transporterNeedsSource ? 1 : 0);
 				logGlobal->info("AHDBG MAGIC_STATE hero=%s hasSpellbook=%d maxSpellLevel=%d knownSpells=%d",
 					startingHero->getNameTextID(), startingHero->hasSpellbook() ? 1 : 0, startingHero->maxSpellLevel(),
 					static_cast<int>(startingHero->getSpellsInSpellbook().size()));
