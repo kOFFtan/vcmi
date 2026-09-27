@@ -44,6 +44,8 @@ class AutoHeroController
 	bool waitingForMovement = false;
 	bool waitingForDialog = false;
 	bool waitingForBattle = false;
+	int pendingQueryReplies = 0;
+	int querySettleTicks = 0;
 	int encounterGraceTicks = 0;
 	int battleCleanupTicks = 0;
 	std::optional<int3> battleCleanupTarget;
@@ -63,6 +65,9 @@ class AutoHeroController
 	int spellbookWaitTicks = 0;
 	int spellbookKnownSpellsBefore = 0;
 	std::set<ObjectInstanceID> attemptedSpellbookTowns;
+	std::set<ObjectInstanceID> attemptedLevelObjects;
+	std::optional<ObjectInstanceID> activeLevelObject;
+	std::optional<int3> activeLevelDestination;
 	std::set<ObjectInstanceID> attemptedShrines;
 	std::optional<ObjectInstanceID> activeShrineObject;
 	std::optional<int3> activeShrineDestination;
@@ -132,6 +137,9 @@ public:
 	void update();
 	void onHeroMovementFinished(const CGHeroInstance * hero);
 	void onDialogResolved();
+	void onQueryOpened();
+	void onQueryReplyApplied();
+	bool shouldAutoAcceptDwellingRecruit() const;
 	bool isRunning() const { return running; }
 	AutoHeroes::DecisionPolicy decisionPolicy() const;
 	AutoHeroes::TreasureChestChoice treasureChestChoice() const;

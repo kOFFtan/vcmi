@@ -370,9 +370,68 @@ void AutoHeroController::onDialogResolved()
 		return;
 	waitingForDialog = false;
 	const auto * hero = activeHero();
-	logGlobal->info("AHDBG DIALOG_RESOLVED hero=%s action=%s mp=%d encounterGrace=%d",
+	logGlobal->info("AHDBG DIALOG_RESOLVED hero=%s action=%s mp=%d encounterGrace=%d pendingQueries=%d",
 		hero ? hero->getNameTextID() : "<none>", activeAction ? actionName(*activeAction) : "none",
-		hero ? hero->movementPointsRemaining() : -1, encounterGraceTicks);
+		hero ? hero->movementPointsRemaining() : -1, encounterGraceTicks, pendingQueryReplies);
+}
+
+void AutoHeroController::onQueryOpened()
+{
+	if(!running)
+		return;
+
+	++pendingQueryReplies;
+	querySettleTicks = 0;
+	const auto * hero = activeHero();
+	logGlobal->info("AHDBG QUERY_BARRIER state=OPEN hero=%s action=%s pending=%d",
+		hero ? hero->getNameTextID() : "<none>", activeAction ? actionName(*activeAction) : "none", pendingQueryReplies);
+}
+
+void AutoHeroController::onQueryReplyApplied()
+{
+	if(!running || pendingQueryReplies <= 0)
+		return;
+
+	--pendingQueryReplies;
+	if(pendingQueryReplies == 0)
+		querySettleTicks = 3;
+
+	const auto * hero = activeHero();
+	logGlobal->info("AHDBG QUERY_BARRIER state=REPLY_APPLIED hero=%s action=%s pending=%d settleTicks=%d",
+		hero ? hero->getNameTextID() : "<none>", activeAction ? actionName(*activeAction) : "none",
+		pendingQueryReplies, querySettleTicks);
+}
+
+bool AutoHeroController::shouldAutoAcceptDwellingRecruit() const
+{
+	if(!running || !owner.cb)
+		return false;
+
+	const auto * hero = activeHero();
+	if(!hero || !allowsAction(AutoHeroes::Action::RECRUIT_CREATURES))
+		return false;
+
+	const auto config = AutoHeroes::readHeroConfig(hero->id);
+	for(const auto * object : owner.cb->getVisitableObjs(hero->visitablePos()))
+	{
+		const auto * dwelling = dynamic_cast<const CGDwelling *>(object);
+		if(!dwelling || dynamic_cast<const CGTownInstance *>(dwelling) || dwelling->ID == Obj::WAR_MACHINE_FACTORY)
+			continue;
+
+		// A guarded hostile dwelling uses a visually similar yes/no query for combat.
+		// Never auto-confirm that query as if it were a recruitment offer.
+		if(dwelling->stacksCount() > 0)
+			continue;
+
+		const bool useful = dwellingHasUsefulRecruit(dwelling, hero, config);
+		logGlobal->info("AHDBG FIELD_RECRUIT_OFFER hero=%s object=%s objectId=%d coord=%s useful=%d",
+			hero->getNameTextID(), dwelling->getSubtypeName(), dwelling->id.getNum(),
+			dwelling->visitablePos().toString(), useful ? 1 : 0);
+		if(useful)
+			return true;
+	}
+
+	return false;
 }
 
 bool AutoHeroController::start(bool endTurnWhenFinished)
@@ -414,6 +473,8 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	waitingForMovement = false;
 	waitingForDialog = false;
 	waitingForBattle = false;
+	pendingQueryReplies = 0;
+	querySettleTicks = 0;
 	encounterGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
@@ -433,6 +494,9 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	spellbookWaitTicks = 0;
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
+	attemptedLevelObjects.clear();
+	activeLevelObject.reset();
+	activeLevelDestination.reset();
 	attemptedShrines.clear();
 	activeShrineObject.reset();
 	activeShrineDestination.reset();
@@ -467,6 +531,8 @@ void AutoHeroController::cancel()
 	waitingForMovement = false;
 	waitingForDialog = false;
 	waitingForBattle = false;
+	pendingQueryReplies = 0;
+	querySettleTicks = 0;
 	encounterGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
@@ -487,6 +553,9 @@ void AutoHeroController::cancel()
 	spellbookWaitTicks = 0;
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
+	attemptedLevelObjects.clear();
+	activeLevelObject.reset();
+	activeLevelDestination.reset();
 	attemptedShrines.clear();
 	activeShrineObject.reset();
 	activeShrineDestination.reset();
@@ -506,6 +575,22 @@ void AutoHeroController::update()
 
 	if(waitingForBattle)
 		return;
+
+	if(pendingQueryReplies > 0)
+		return;
+
+	if(querySettleTicks > 0)
+	{
+		--querySettleTicks;
+		if(querySettleTicks == 0)
+		{
+			owner.invalidatePaths();
+			const auto * hero = activeHero();
+			logGlobal->info("AHDBG QUERY_BARRIER state=SETTLED hero=%s action=%s",
+				hero ? hero->getNameTextID() : "<none>", activeAction ? actionName(*activeAction) : "none");
+		}
+		return;
+	}
 
 	if(waitingForSpellbook)
 	{
@@ -673,6 +758,15 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		return;
 	}
 
+	if(activeLevelObject && activeLevelDestination && hero->visitablePos() == *activeLevelDestination)
+	{
+		attemptedLevelObjects.insert(*activeLevelObject);
+		logGlobal->info("AHDBG LEVEL_ATTEMPT hero=%s objectId=%d coord=%s result=ARRIVED",
+			hero->getNameTextID(), activeLevelObject->getNum(), activeLevelDestination->toString());
+		activeLevelObject.reset();
+		activeLevelDestination.reset();
+	}
+
 	if(activeSpellbookAcquisition && activeSpellbookTown)
 	{
 		const auto * town = hero->getVisitedTown();
@@ -754,6 +848,8 @@ void AutoHeroController::finishRun()
 	waitingForMovement = false;
 	waitingForDialog = false;
 	waitingForBattle = false;
+	pendingQueryReplies = 0;
+	querySettleTicks = 0;
 	encounterGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
@@ -773,6 +869,9 @@ void AutoHeroController::finishRun()
 	spellbookWaitTicks = 0;
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
+	attemptedLevelObjects.clear();
+	activeLevelObject.reset();
+	activeLevelDestination.reset();
 	attemptedShrines.clear();
 	activeShrineObject.reset();
 	activeShrineDestination.reset();
@@ -808,6 +907,9 @@ void AutoHeroController::advanceHero()
 	spellbookWaitTicks = 0;
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
+	attemptedLevelObjects.clear();
+	activeLevelObject.reset();
+	activeLevelDestination.reset();
 	attemptedShrines.clear();
 	activeShrineObject.reset();
 	activeShrineDestination.reset();
@@ -828,7 +930,7 @@ void AutoHeroController::advanceHero()
 
 void AutoHeroController::process()
 {
-	if(!running || waitingForMovement || waitingForBattle || waitingForSpellbook || battleCleanupTicks > 0 || waitingForTownUpgrade)
+	if(!running || waitingForMovement || waitingForBattle || waitingForSpellbook || pendingQueryReplies > 0 || querySettleTicks > 0 || battleCleanupTicks > 0 || waitingForTownUpgrade)
 		return;
 
 	if(!owner.makingTurn)
@@ -1073,6 +1175,8 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	activeCollectTreasureChest = false;
 	activeSpellbookAcquisition = false;
 	activeSpellbookTown.reset();
+	activeLevelObject.reset();
+	activeLevelDestination.reset();
 	activeShrineObject.reset();
 	activeShrineDestination.reset();
 	activeShrineSpell.reset();
@@ -1128,12 +1232,18 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	{
 		for(const auto * object : owner.cb->getVisitableObjs(destination))
 		{
-			if(!isMagicShrineTarget(object))
+			if(!isLevelUpTarget(object, config.allowSecondarySkillLearning))
 				continue;
-			activeShrineObject = object->id;
-			activeShrineDestination = destination;
-			activeShrineSpell = magicShrineSpell(object);
-			activeShrineKnownSpellsBefore = static_cast<int>(hero->getSpellsInSpellbook().size());
+
+			activeLevelObject = object->id;
+			activeLevelDestination = destination;
+			if(isMagicShrineTarget(object))
+			{
+				activeShrineObject = object->id;
+				activeShrineDestination = destination;
+				activeShrineSpell = magicShrineSpell(object);
+				activeShrineKnownSpellsBefore = static_cast<int>(hero->getSpellsInSpellbook().size());
+			}
 			break;
 		}
 	}
@@ -1166,6 +1276,8 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	activeCollectTreasureChest = false;
 	activeSpellbookAcquisition = false;
 	activeSpellbookTown.reset();
+	activeLevelObject.reset();
+	activeLevelDestination.reset();
 	activeShrineObject.reset();
 	activeShrineDestination.reset();
 	activeShrineSpell.reset();
@@ -1381,6 +1493,13 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 					if(!isLevelUpTarget(object, config.allowSecondarySkillLearning))
 						continue;
 
+					if(attemptedLevelObjects.count(object->id))
+					{
+						logGlobal->info("AHDBG LEVEL_REJECT hero=%s object=%s objectId=%d coord=%s reason=already_attempted_run",
+							hero->getNameTextID(), object->getSubtypeName(), object->id.getNum(), object->visitablePos().toString());
+						continue;
+					}
+
 					std::optional<SpellID> shrineSpell;
 					int shrineSpellLevel = -1;
 					if(isMagicShrineTarget(object))
@@ -1436,6 +1555,25 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 					else if(object->wasVisited(hero))
 					{
 						continue;
+					}
+
+					if(object->ID == Obj::LIBRARY_OF_ENLIGHTENMENT)
+					{
+						const auto * rewardable = dynamic_cast<const CRewardableObject *>(object);
+						if(!rewardable)
+						{
+							logGlobal->warn("AHDBG LEVEL_REJECT hero=%s object=%s objectId=%d coord=%s reason=library_not_rewardable",
+								hero->getNameTextID(), object->getSubtypeName(), object->id.getNum(), object->visitablePos().toString());
+							continue;
+						}
+
+						const auto available = rewardable->getAvailableRewards(hero, Rewardable::EEventType::EVENT_FIRST_VISIT);
+						if(available.empty())
+						{
+							logGlobal->info("AHDBG LEVEL_REJECT hero=%s object=%s objectId=%d coord=%s reason=reward_limiter",
+								hero->getNameTextID(), object->getSubtypeName(), object->id.getNum(), object->visitablePos().toString());
+							continue;
+						}
 					}
 
 					if((object->ID == Obj::SCHOOL_OF_MAGIC || object->ID == Obj::SCHOOL_OF_WAR)

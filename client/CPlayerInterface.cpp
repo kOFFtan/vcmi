@@ -549,6 +549,9 @@ void CPlayerInterface::heroGotLevel(const CGHeroInstance *hero, PrimarySkill psk
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 
+	if(autoHeroController && autoHeroController->isRunning() && queryID >= 0)
+		autoHeroController->onQueryOpened();
+
 	if(autoHeroController && autoHeroController->isRunning()
 		&& autoHeroController->decisionPolicy() == AutoHeroes::DecisionPolicy::AUTO_ACCEPT
 		&& queryID >= 0)
@@ -595,6 +598,10 @@ void CPlayerInterface::heroGotLevel(const CGHeroInstance *hero, PrimarySkill psk
 void CPlayerInterface::commanderGotLevel(const CCommanderInstance * commander, std::vector<ui32> skills, QueryID queryID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->isRunning() && queryID >= 0)
+		autoHeroController->onQueryOpened();
+
 	auto showCallback = [this, commander, skills = std::move(skills), queryID]() mutable
 	{
 		ENGINE->sound().playSound(soundBase::heroNewLevel);
@@ -1244,6 +1251,9 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 
+	if(autoHeroController && autoHeroController->isRunning() && askID >= 0)
+		autoHeroController->onQueryOpened();
+
 	if(autoHeroController && autoHeroController->isRunning())
 	{
 		const auto * activeHero = autoHeroController->currentHero();
@@ -1264,6 +1274,16 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 		logGlobal->info("AutoHeroes v1.4: automatically choosing treasure reward=%s option=%d",
 			takeExperience ? "experience" : "gold", option);
 		cb->selectionMade(option, askID);
+		return;
+	}
+
+	if(autoHeroController && autoHeroController->isRunning()
+		&& !selection && cancel
+		&& autoHeroController->shouldAutoAcceptDwellingRecruit())
+	{
+		logGlobal->info("AHDBG DIALOG_REPLY kind=field_recruit source=auto option=1");
+		logGlobal->info("AutoHeroes v1.8: automatically accepting field dwelling recruitment offer");
+		cb->selectionMade(1, askID);
 		return;
 	}
 
@@ -1513,6 +1533,8 @@ void CPlayerInterface::requestRealized( PackageApplied *pa )
 	if(pa->packType == CTypeList::getInstance().getTypeID<QueryReply>(nullptr))
 	{
 		movementController->onQueryReplyApplied();
+		if(autoHeroController)
+			autoHeroController->onQueryReplyApplied();
 	}
 }
 
@@ -1648,6 +1670,9 @@ void CPlayerInterface::initializeHeroTownList()
 void CPlayerInterface::showRecruitmentDialog(const CGDwelling *dwelling, const CArmedInstance *dst, int level, QueryID queryID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->isRunning() && queryID >= 0)
+		autoHeroController->onQueryOpened();
 
 	const CGHeroInstance * autoHero = autoHeroController ? autoHeroController->currentHero() : nullptr;
 	if(autoHeroController && autoHeroController->isRunning() && autoHero
