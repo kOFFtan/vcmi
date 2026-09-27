@@ -9,6 +9,7 @@
 #include "../lib/int3.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <utility>
