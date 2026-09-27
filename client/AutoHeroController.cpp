@@ -958,7 +958,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		logGlobal->warn("AHDBG ANOMALY type=no_movement_progress hero=%s action=%s", hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none");
 		logGlobal->warn("AutoHeroes v1.8.1: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
 		advanceHero();
-		encounterGraceTicks = 12;
+		encounterGraceTicks = 24;
 		return;
 	}
 
@@ -1199,7 +1199,7 @@ void AutoHeroController::process()
 		if(!hero || hero->isGarrisoned() || hero->movementPointsRemaining() <= 100 || !AutoHeroes::isHeroEnabled(hero->id))
 		{
 			advanceHero();
-			encounterGraceTicks = 12;
+			encounterGraceTicks = 24;
 			return;
 		}
 
@@ -1210,7 +1210,7 @@ void AutoHeroController::process()
 			logGlobal->warn("AHDBG ANOMALY type=step_limit hero=%s steps=%d", hero->getNameTextID(), stepsForCurrentHero);
 			logGlobal->warn("AutoHeroes v0.8: step limit reached for hero %s", hero->getNameTextID());
 			advanceHero();
-			encounterGraceTicks = 12;
+			encounterGraceTicks = 24;
 			return;
 		}
 
@@ -1219,7 +1219,7 @@ void AutoHeroController::process()
 
 		logGlobal->info("AutoHeroes v1.8.1: no configured target found for hero %s", hero->getNameTextID());
 		advanceHero();
-		encounterGraceTicks = 12;
+		encounterGraceTicks = 24;
 		return;
 	}
 
