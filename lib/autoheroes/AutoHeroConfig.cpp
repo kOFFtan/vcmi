@@ -135,6 +135,12 @@ JsonNode serializeHeroConfig(const HeroConfig & config)
 	node["movementRadius"].Integer() = std::max(0, config.movementRadius);
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
+	switch(config.recruitmentLocation)
+	{
+	case RecruitmentLocation::TOWN_ONLY: node["recruitmentLocation"].String() = "townOnly"; break;
+	case RecruitmentLocation::FIELD_ONLY: node["recruitmentLocation"].String() = "fieldOnly"; break;
+	case RecruitmentLocation::ANYWHERE: node["recruitmentLocation"].String() = "anywhere"; break;
+	}
 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
 	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
@@ -181,6 +187,14 @@ HeroConfig deserializeHeroConfig(const JsonNode & node)
 	result.recruitmentScope = recruitment == "unrestricted"
 		? RecruitmentScope::UNRESTRICTED
 		: RecruitmentScope::HERO_FACTION_ONLY;
+
+	const std::string recruitmentLocation = readString(node, "recruitmentLocation", "anywhere");
+	if(recruitmentLocation == "townOnly")
+		result.recruitmentLocation = RecruitmentLocation::TOWN_ONLY;
+	else if(recruitmentLocation == "fieldOnly")
+		result.recruitmentLocation = RecruitmentLocation::FIELD_ONLY;
+	else
+		result.recruitmentLocation = RecruitmentLocation::ANYWHERE;
 
 	const std::string decision = readString(node, "decisionPolicy", "askHuman");
 	result.decisionPolicy = decision == "autoAccept" ? DecisionPolicy::AUTO_ACCEPT : DecisionPolicy::ASK_HUMAN;
@@ -254,6 +268,12 @@ void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
 	node["movementRadius"].Integer() = std::max(0, config.movementRadius);
 	node["maxForeignFactionSlots"].Integer() = std::clamp(config.maxForeignFactionSlots, -1, 7);
 	node["recruitmentScope"].String() = config.recruitmentScope == RecruitmentScope::UNRESTRICTED ? "unrestricted" : "heroFactionOnly";
+	switch(config.recruitmentLocation)
+	{
+	case RecruitmentLocation::TOWN_ONLY: node["recruitmentLocation"].String() = "townOnly"; break;
+	case RecruitmentLocation::FIELD_ONLY: node["recruitmentLocation"].String() = "fieldOnly"; break;
+	case RecruitmentLocation::ANYWHERE: node["recruitmentLocation"].String() = "anywhere"; break;
+	}
 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
 	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
