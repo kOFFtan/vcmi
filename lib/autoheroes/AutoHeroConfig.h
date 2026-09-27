@@ -7,6 +7,7 @@
 
 #include "../constants/EntityIdentifiers.h"
 
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -79,6 +80,14 @@ struct HeroConfig
 	CombatPolicy combatPolicy = CombatPolicy::SAFE_ONLY;
 	DecisionPolicy decisionPolicy = DecisionPolicy::ASK_HUMAN;
 	TreasureChestChoice treasureChestChoice = TreasureChestChoice::GOLD;
+
+	/// Dedicated army courier mode. When enabled, normal AutoHeroes actions are
+	/// suspended for this hero and it shuttles troops from selected towns to
+	/// the selected recipient hero.
+	bool transporterMode = false;
+	std::set<ObjectInstanceID> transporterSourceTowns;
+	std::optional<ObjectInstanceID> transporterTargetHero;
+
 	/// If false, AutoHeroes must not intentionally visit map objects that teach secondary skills.
 	bool allowSecondarySkillLearning = false;
 	/// Legacy reserve kept for non-recruitment paid map objects. Recruitment uses recruitmentBudget.
