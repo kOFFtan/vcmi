@@ -32,6 +32,13 @@ enum class RecruitmentScope
 	UNRESTRICTED
 };
 
+enum class RecruitmentLocation
+{
+	ANYWHERE,
+	TOWN_ONLY,
+	FIELD_ONLY
+};
+
 enum class RecruitmentBudget
 {
 	PERCENT_25 = 25,
@@ -65,6 +72,7 @@ struct HeroConfig
 	std::set<Action> actions;
 	std::vector<Action> priority;
 	RecruitmentScope recruitmentScope = RecruitmentScope::HERO_FACTION_ONLY;
+	RecruitmentLocation recruitmentLocation = RecruitmentLocation::ANYWHERE;
 	RecruitmentBudget recruitmentBudget = RecruitmentBudget::PERCENT_100;
 	/// -1 means unlimited. Otherwise valid range is 0..7.
 	int maxForeignFactionSlots = 0;

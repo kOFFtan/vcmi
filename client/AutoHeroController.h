@@ -27,6 +27,7 @@ enum class Action;
 enum class DecisionPolicy;
 enum class TreasureChestChoice;
 enum class RecruitmentScope;
+enum class RecruitmentLocation;
 enum class RecruitmentBudget;
 struct HeroConfig;
 
@@ -156,6 +157,7 @@ public:
 	const CGHeroInstance * currentHero() const;
 	int recruitmentBudgetPercent() const;
 	AutoHeroes::RecruitmentScope recruitmentScope() const;
+	AutoHeroes::RecruitmentLocation recruitmentLocation() const;
 	int maxForeignFactionSlots() const;
 	bool shouldAutoFight(const CGHeroInstance * hero) const;
 	bool isAutoBattleActive() const;

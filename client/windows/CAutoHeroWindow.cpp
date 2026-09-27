@@ -65,7 +65,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 82, 668, 202), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 294, 668, 184), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 
-	std::string title = tr("vcmi.autoHeroes.title") + " v1.7: " + GAME->translator().translate(hero->getNameTextID());
+	std::string title = tr("vcmi.autoHeroes.title") + " v1.7.1: " + GAME->translator().translate(hero->getNameTextID());
 	keep(std::make_shared<CLabel>(WIN_W / 2, 20, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 650));
 
 	auto enabled = keep(std::make_shared<CToggleButton>(
@@ -204,7 +204,26 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	}));
 	updateTreasureChestButton();
 
-	keep(std::make_shared<CLabel>(230, 450, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 440));
+	keep(std::make_shared<CLabel>(250, 426, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.recruitLocation")));
+	recruitmentLocationButton = keep(std::make_shared<CButton>(Point(250, 444), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.recruitLocationHelp")), [this]()
+	{
+		switch(draft.recruitmentLocation)
+		{
+		case AutoHeroes::RecruitmentLocation::ANYWHERE:
+			draft.recruitmentLocation = AutoHeroes::RecruitmentLocation::TOWN_ONLY;
+			break;
+		case AutoHeroes::RecruitmentLocation::TOWN_ONLY:
+			draft.recruitmentLocation = AutoHeroes::RecruitmentLocation::FIELD_ONLY;
+			break;
+		case AutoHeroes::RecruitmentLocation::FIELD_ONLY:
+			draft.recruitmentLocation = AutoHeroes::RecruitmentLocation::ANYWHERE;
+			break;
+		}
+		updateRecruitmentLocationButton();
+	}));
+	updateRecruitmentLocationButton();
+
+	keep(std::make_shared<CLabel>(478, 450, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, tr("vcmi.autoHeroes.infoAuto"), 195));
 
 	auto run = keep(std::make_shared<CButton>(Point(22, 510), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(tr("vcmi.autoHeroes.runWarning")), [this](){ saveAndRun(); }));
 	run->setTextOverlay(tr("vcmi.autoHeroes.runNow"), FONT_SMALL, Colors::YELLOW);
@@ -261,6 +280,18 @@ void CAutoHeroWindow::updateRecruitmentButton()
 		? "vcmi.autoHeroes.recruitOwn"
 		: "vcmi.autoHeroes.recruitAny";
 	recruitmentButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
+}
+
+void CAutoHeroWindow::updateRecruitmentLocationButton()
+{
+	std::string key;
+	switch(draft.recruitmentLocation)
+	{
+	case AutoHeroes::RecruitmentLocation::ANYWHERE: key = "vcmi.autoHeroes.recruitLocationAny"; break;
+	case AutoHeroes::RecruitmentLocation::TOWN_ONLY: key = "vcmi.autoHeroes.recruitLocationTown"; break;
+	case AutoHeroes::RecruitmentLocation::FIELD_ONLY: key = "vcmi.autoHeroes.recruitLocationField"; break;
+	}
+	recruitmentLocationButton->setTextOverlay(LIBRARY->generaltexth->translate(key), FONT_SMALL, Colors::YELLOW);
 }
 
 void CAutoHeroWindow::updateForeignSlotsButton()
@@ -326,6 +357,10 @@ void CAutoHeroWindow::updateTreasureChestButton()
 
 void CAutoHeroWindow::persistSettings()
 {
+	logGlobal->info("AHDBG CONFIG_SAVE hero=%s enabled=%d recruitScope=%d recruitLocation=%d budget=%d combat=%d decision=%d",
+		hero->getNameTextID(), draft.enabled ? 1 : 0, static_cast<int>(draft.recruitmentScope),
+		static_cast<int>(draft.recruitmentLocation), AutoHeroes::recruitmentBudgetPercent(draft.recruitmentBudget),
+		static_cast<int>(draft.combatPolicy), static_cast<int>(draft.decisionPolicy));
 	AutoHeroes::writeHeroConfig(hero->id, draft);
 	if(GAME->interface() && GAME->interface()->localState)
 		GAME->interface()->localState->saveState();

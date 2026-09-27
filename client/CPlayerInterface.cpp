@@ -1697,7 +1697,8 @@ void CPlayerInterface::showRecruitmentDialog(const CGDwelling *dwelling, const C
 
 	const CGHeroInstance * autoHero = autoHeroController ? autoHeroController->currentHero() : nullptr;
 	if(autoHeroController && autoHeroController->isRunning() && autoHero
-		&& dst == autoHero && autoHeroController->allowsAction(AutoHeroes::Action::RECRUIT_CREATURES))
+		&& dst == autoHero && autoHeroController->allowsAction(AutoHeroes::Action::RECRUIT_CREATURES)
+		&& autoHeroController->recruitmentLocation() != AutoHeroes::RecruitmentLocation::TOWN_ONLY)
 	{
 		auto resources = cb->getResourceAmount();
 		const int budgetPercent = autoHeroController->recruitmentBudgetPercent();
