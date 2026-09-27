@@ -71,6 +71,7 @@ class AutoHeroController
 	std::optional<ObjectInstanceID> pendingShrineObject;
 	std::optional<SpellID> pendingShrineSpell;
 	int pendingShrineKnownSpellsBefore = 0;
+	int shrineVerifyTicks = 0;
 	int3 movementStartPosition = int3(-1, -1, -1);
 	int movementStartPoints = -1;
 	int stepsForCurrentHero = 0;

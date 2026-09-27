@@ -430,6 +430,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	pendingShrineObject.reset();
 	pendingShrineSpell.reset();
 	pendingShrineKnownSpellsBefore = 0;
+	shrineVerifyTicks = 0;
 	pendingUpgradeAudit.clear();
 	diagnosticsActions = 0;
 	diagnosticsMoves = 0;
@@ -483,6 +484,7 @@ void AutoHeroController::cancel()
 	pendingShrineObject.reset();
 	pendingShrineSpell.reset();
 	pendingShrineKnownSpellsBefore = 0;
+	shrineVerifyTicks = 0;
 	pendingUpgradeAudit.clear();
 }
 
@@ -677,6 +679,10 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		pendingShrineObject = activeShrineObject;
 		pendingShrineSpell = activeShrineSpell;
 		pendingShrineKnownSpellsBefore = activeShrineKnownSpellsBefore;
+		shrineVerifyTicks = 8;
+		logGlobal->info("AHDBG SHRINE_VERIFY_WAIT hero=%s objectId=%d spell=%d ticks=%d",
+			hero->getNameTextID(), pendingShrineObject ? pendingShrineObject->getNum() : -1,
+			pendingShrineSpell ? pendingShrineSpell->getNum() : -1, shrineVerifyTicks);
 		activeShrineObject.reset();
 		activeShrineDestination.reset();
 		activeShrineSpell.reset();
@@ -764,6 +770,7 @@ void AutoHeroController::finishRun()
 	pendingShrineObject.reset();
 	pendingShrineSpell.reset();
 	pendingShrineKnownSpellsBefore = 0;
+	shrineVerifyTicks = 0;
 	stepsForCurrentHero = 0;
 	pendingUpgradeAudit.clear();
 
@@ -798,6 +805,7 @@ void AutoHeroController::advanceHero()
 	pendingShrineObject.reset();
 	pendingShrineSpell.reset();
 	pendingShrineKnownSpellsBefore = 0;
+	shrineVerifyTicks = 0;
 	encounterGraceTicks = 0;
 	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
@@ -854,8 +862,15 @@ void AutoHeroController::process()
 		}
 
 		const CGHeroInstance * hero = activeHero();
-		if(hero)
+		if(hero && pendingShrineObject)
+		{
+			if(shrineVerifyTicks > 0)
+			{
+				--shrineVerifyTicks;
+				return;
+			}
 			evaluatePendingShrineResult(hero);
+		}
 		if(!hero || hero->isGarrisoned() || hero->movementPointsRemaining() <= 100 || !AutoHeroes::isHeroEnabled(hero->id))
 		{
 			advanceHero();
@@ -1590,6 +1605,7 @@ void AutoHeroController::evaluatePendingShrineResult(const CGHeroInstance * hero
 	pendingShrineObject.reset();
 	pendingShrineSpell.reset();
 	pendingShrineKnownSpellsBefore = 0;
+	shrineVerifyTicks = 0;
 }
 
 bool AutoHeroController::dwellingHasUsefulRecruit(const CGDwelling * dwelling, const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
