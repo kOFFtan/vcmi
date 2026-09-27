@@ -964,6 +964,10 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		activeShrineKnownSpellsBefore = 0;
 	}
 
+	const auto movementConfig = AutoHeroes::readHeroConfig(hero->id);
+	if(movementConfig.transporterMode && loadTransporterAtCurrentTown(hero, movementConfig))
+		return;
+
 	if(activeAction && *activeAction == AutoHeroes::Action::RECRUIT_CREATURES)
 	{
 		const int upgradeRequests = upgradeArmyInCurrentTown(hero);
