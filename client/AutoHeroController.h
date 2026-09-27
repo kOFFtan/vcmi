@@ -54,6 +54,7 @@ class AutoHeroController
 	int townUpgradeDelayTicks = 0;
 	bool mergeAfterTownUpgrade = false;
 	bool endTurnAfterRun = false;
+	int transportSettleTicks = 0;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
@@ -111,6 +112,12 @@ class AutoHeroController
 	void finishRun();
 	void advanceHero();
 	bool startNextAction(const CGHeroInstance * hero);
+	bool startTransporterAction(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
+	std::optional<int3> findTransportSourceTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	bool loadTransporterAtCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
+	bool transporterHasCargo(const CGHeroInstance * hero) const;
+	SlotID transporterReserveSlot(const CGHeroInstance * hero) const;
+	bool dispatchTransportArmy(const CGHeroInstance * carrier, const CGHeroInstance * recipient);
 	bool startMovement(const CGHeroInstance * hero, const int3 & destination, bool allowDestinationBattle = false, const std::optional<int3> & allowedBattleGuard = std::nullopt);
 	std::optional<int3> findCollectTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
 	std::optional<int3> findLevelTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
@@ -149,6 +156,7 @@ public:
 	bool shouldAutoAcceptDwellingRecruit() const;
 	std::optional<int> autoCreatureEncounterReply() const;
 	bool shouldAutoAcceptBorderGuard() const;
+	bool handleTransportHeroExchange(ObjectInstanceID hero1, ObjectInstanceID hero2, QueryID query);
 	bool isRunning() const { return running; }
 	AutoHeroes::DecisionPolicy decisionPolicy() const;
 	AutoHeroes::TreasureChestChoice treasureChestChoice() const;
