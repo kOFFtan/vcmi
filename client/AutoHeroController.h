@@ -68,6 +68,7 @@ class AutoHeroController
 	int spellbookKnownSpellsBefore = 0;
 	std::set<ObjectInstanceID> attemptedSpellbookTowns;
 	std::set<ObjectInstanceID> attemptedLevelObjects;
+	std::set<ObjectInstanceID> attemptedPortalEntrances;
 	std::optional<ObjectInstanceID> activeLevelObject;
 	std::optional<int3> activeLevelDestination;
 	std::set<ObjectInstanceID> attemptedShrines;

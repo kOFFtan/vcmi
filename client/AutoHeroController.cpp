@@ -17,6 +17,7 @@
 #include "../lib/mapObjects/CGHeroInstance.h"
 #include "../lib/mapObjects/CGCreature.h"
 #include "../lib/mapObjects/Quest.h"
+#include "../lib/mapObjects/MiscObjects.h"
 #include "../lib/mapObjects/CGObjectInstance.h"
 #include "../lib/mapObjects/CGDwelling.h"
 #include "../lib/mapObjects/CGTownInstance.h"
@@ -73,6 +74,14 @@ bool isTeleportAction(EPathNodeAction action)
 	return action == EPathNodeAction::TELEPORT_NORMAL
 		|| action == EPathNodeAction::TELEPORT_BLOCKING_VISIT
 		|| action == EPathNodeAction::TELEPORT_BATTLE;
+}
+
+bool pathUsesTeleport(const CGPath & path)
+{
+	return std::any_of(path.nodes.begin(), path.nodes.end(), [](const CGPathNode & node)
+	{
+		return isTeleportAction(node.action);
+	});
 }
 
 bool isSecondarySkillLearningTarget(const CGObjectInstance * target)
@@ -364,7 +373,7 @@ void AutoHeroController::onBattleStarted()
 		activeAction ? actionName(*activeAction) : "none",
 		activeBattleGuard ? activeBattleGuard->toString() : "<none>",
 		hero ? hero->movementPointsRemaining() : -1);
-	logGlobal->info("AutoHeroes v1.7: battle started for active auto hero; automation paused until battle state is fully resolved");
+	logGlobal->info("AutoHeroes v1.7.2: battle started for active auto hero; automation paused until battle state is fully resolved");
 }
 
 void AutoHeroController::onBattleFinished()
@@ -383,7 +392,7 @@ void AutoHeroController::onBattleFinished()
 	logGlobal->info("AHDBG BATTLE_END hero=%s mp=%d cleanupTicks=%d battles=%d/%d",
 		hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1, battleCleanupTicks,
 		diagnosticsBattlesFinished, diagnosticsBattlesStarted);
-	logGlobal->info("AutoHeroes v1.7: battle finished; waiting for battle state cleanup before resuming");
+	logGlobal->info("AutoHeroes v1.7.2: battle finished; waiting for battle state cleanup before resuming");
 }
 
 void AutoHeroController::onDialogResolved()
@@ -630,6 +639,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
 	attemptedLevelObjects.clear();
+	attemptedPortalEntrances.clear();
 	activeLevelObject.reset();
 	activeLevelDestination.reset();
 	attemptedShrines.clear();
@@ -652,7 +662,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	diagnosticsAnomalies = 0;
 	const int currentDay = owner.cb ? owner.cb->getCalendar().getCurrentDay() : -1;
 	logGlobal->info("AHDBG RUN_START day=%d heroes=%d endTurn=%d", currentDay, static_cast<int>(heroQueue.size()), endTurnAfterRun ? 1 : 0);
-	logGlobal->info("AutoHeroes v1.7: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
+	logGlobal->info("AutoHeroes v1.7.2: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
 	process();
 	return true;
 }
@@ -689,6 +699,7 @@ void AutoHeroController::cancel()
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
 	attemptedLevelObjects.clear();
+	attemptedPortalEntrances.clear();
 	activeLevelObject.reset();
 	activeLevelDestination.reset();
 	attemptedShrines.clear();
@@ -807,7 +818,7 @@ void AutoHeroController::update()
 		owner.invalidatePaths();
 		const auto * hero = activeHero();
 		logGlobal->info("AHDBG POST_BATTLE_RESUME hero=%s mp=%d", hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1);
-		logGlobal->info("AutoHeroes v1.7: post-battle state refreshed; resuming automation");
+		logGlobal->info("AutoHeroes v1.7.2: post-battle state refreshed; resuming automation");
 		return;
 	}
 
@@ -838,7 +849,7 @@ void AutoHeroController::update()
 			if(mergeRequests > 0)
 			{
 				townUpgradeDelayTicks = 20;
-				logGlobal->info("AutoHeroes v1.7: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
+				logGlobal->info("AutoHeroes v1.7.2: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
 				return;
 			}
 		}
@@ -937,7 +948,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 			waitingForTownUpgrade = true;
 			townUpgradeDelayTicks = 20;
 			mergeAfterTownUpgrade = true;
-			logGlobal->info("AutoHeroes v1.7: dispatched %d army upgrade requests before town recruitment; waiting for authoritative server state", upgradeRequests);
+			logGlobal->info("AutoHeroes v1.7.2: dispatched %d army upgrade requests before town recruitment; waiting for authoritative server state", upgradeRequests);
 			return;
 		}
 
@@ -947,7 +958,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 			waitingForTownUpgrade = true;
 			townUpgradeDelayTicks = 20;
 			mergeAfterTownUpgrade = false;
-			logGlobal->info("AutoHeroes v1.7: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
+			logGlobal->info("AutoHeroes v1.7.2: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
 			return;
 		}
 
@@ -1005,6 +1016,7 @@ void AutoHeroController::finishRun()
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
 	attemptedLevelObjects.clear();
+	attemptedPortalEntrances.clear();
 	activeLevelObject.reset();
 	activeLevelDestination.reset();
 	attemptedShrines.clear();
@@ -1026,7 +1038,7 @@ void AutoHeroController::finishRun()
 	}
 	logGlobal->info("AHDBG RUN_SUMMARY actions=%d moves=%d battlesStarted=%d battlesFinished=%d upgradeRequests=%d mergeRequests=%d recruited=%d anomalies=%d",
 		diagnosticsActions, diagnosticsMoves, diagnosticsBattlesStarted, diagnosticsBattlesFinished, diagnosticsUpgradeRequests, diagnosticsMergeRequests, diagnosticsRecruitAmount, diagnosticsAnomalies);
-	logGlobal->info("AutoHeroes v1.7: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
+	logGlobal->info("AutoHeroes v1.7.2: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
 	owner.onAutoHeroesFinished(shouldEndTurn);
 }
 
@@ -1043,6 +1055,7 @@ void AutoHeroController::advanceHero()
 	spellbookKnownSpellsBefore = 0;
 	attemptedSpellbookTowns.clear();
 	attemptedLevelObjects.clear();
+	attemptedPortalEntrances.clear();
 	activeLevelObject.reset();
 	activeLevelDestination.reset();
 	attemptedShrines.clear();
@@ -1219,6 +1232,8 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 
 	std::optional<ActionCandidate> firstPriorityFallback;
 	std::optional<ActionCandidate> selected;
+	std::optional<ActionCandidate> roleLocalFallback;
+	std::optional<ActionCandidate> rolePriorityFallback;
 
 	for(size_t rank = 0; rank < config.priority.size(); ++rank)
 	{
@@ -1226,15 +1241,16 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		if(!config.allows(action))
 			continue;
 
+		bool roleMismatch = false;
 		if(splitRoles)
 		{
 			if(combatRole && (action == AutoHeroes::Action::COLLECT_RESOURCES || action == AutoHeroes::Action::LEVEL_UP))
-				continue;
+				roleMismatch = true;
 			if(!combatRole && (action == AutoHeroes::Action::RECRUIT_CREATURES
 				|| action == AutoHeroes::Action::EXPLORE
 				|| action == AutoHeroes::Action::CAPTURE_OBJECTS
 				|| action == AutoHeroes::Action::FIGHT_NEUTRALS))
-				continue;
+				roleMismatch = true;
 		}
 
 		ActionCandidate candidate;
@@ -1291,13 +1307,24 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 
 		fillMetrics(candidate);
 		const bool isLocal = candidate.destination && candidate.tileDistance <= LOCAL_OPPORTUNITY_RADIUS;
-		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s priorityRank=%d result=%s target=%s turns=%d cost=%.1f tileDistance=%d local=%d spellbook=%d",
+		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s priorityRank=%d result=%s target=%s turns=%d cost=%.1f tileDistance=%d local=%d spellbook=%d roleMismatch=%d",
 			hero->getNameTextID(), actionName(action), candidate.priorityRank,
 			candidate.destination ? "TARGET" : "NONE", candidate.destination ? candidate.destination->toString() : "<none>",
-			candidate.turns, candidate.cost, candidate.destination ? candidate.tileDistance : -1, isLocal ? 1 : 0, candidate.spellbook ? 1 : 0);
+			candidate.turns, candidate.cost, candidate.destination ? candidate.tileDistance : -1, isLocal ? 1 : 0,
+			candidate.spellbook ? 1 : 0, roleMismatch ? 1 : 0);
 
 		if(!candidate.destination)
 			continue;
+
+		if(roleMismatch)
+		{
+			if(isLocal && !roleLocalFallback)
+				roleLocalFallback = candidate;
+			if(!rolePriorityFallback)
+				rolePriorityFallback = candidate;
+			continue;
+		}
+
 		if(isLocal)
 		{
 			selected = candidate;
@@ -1309,8 +1336,24 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 
 	if(!selected)
 		selected = firstPriorityFallback;
+
+	if(!selected && splitRoles)
+	{
+		selected = roleLocalFallback ? roleLocalFallback : rolePriorityFallback;
+		if(selected)
+		{
+			logGlobal->info("AHDBG ROLE_FALLBACK hero=%s role=%s action=%s target=%s reason=no_role_target",
+				hero->getNameTextID(), combatRole ? "combat" : "utility", actionName(selected->action),
+				selected->destination ? selected->destination->toString() : "<none>");
+		}
+	}
+
 	if(!selected || !selected->destination)
+	{
+		logGlobal->info("AHDBG NO_ACTION hero=%s mp=%d splitRoles=%d role=%s reason=no_candidate",
+			hero->getNameTextID(), hero->movementPointsRemaining(), splitRoles ? 1 : 0, combatRole ? "combat" : "utility");
 		return false;
+	}
 
 	ActionCandidate candidate = *selected;
 	const int3 destination = *candidate.destination;
@@ -1340,6 +1383,25 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	activeShrineDestination.reset();
 	activeShrineSpell.reset();
 	activeShrineKnownSpellsBefore = 0;
+
+	if(candidate.action == AutoHeroes::Action::EXPLORE)
+	{
+		for(const auto * object : owner.cb->getVisitableObjs(destination))
+		{
+			const auto * teleport = dynamic_cast<const CGTeleport *>(object);
+			if(!teleport || !teleport->isEntrance())
+				continue;
+
+			attemptedPortalEntrances.insert(teleport->id);
+			for(const auto & exitId : teleport->getAllExits(true))
+				attemptedPortalEntrances.insert(exitId);
+
+			logGlobal->info("AHDBG PORTAL_COMMIT hero=%s objectId=%d coord=%s exits=%d",
+				hero->getNameTextID(), teleport->id.getNum(), destination.toString(),
+				static_cast<int>(teleport->getAllExits(true).size()));
+			break;
+		}
+	}
 
 	if(candidate.action == AutoHeroes::Action::COLLECT_RESOURCES)
 	{
@@ -1413,7 +1475,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		candidate.priorityRank, candidate.turns, candidate.cost, candidate.tileDistance, localSelection ? 1 : 0, selectionReason,
 		candidate.spellbook ? 1 : 0, activeBattleGuard ? 1 : 0,
 		activeBattleGuard ? activeBattleGuard->toString() : "<none>", hero->movementPointsRemaining());
-	logGlobal->info("AutoHeroes v1.7: hero %s selected action=%s target=%s reason=%s%s",
+	logGlobal->info("AutoHeroes v1.7.2: hero %s selected action=%s target=%s reason=%s%s",
 		hero->getNameTextID(), actionName(candidate.action), destination.toString(), selectionReason,
 		candidate.spellbook ? " get-spellbook" : (activeBattleGuard ? " with guarded battle" : ""));
 
@@ -1459,6 +1521,11 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 
 	if(!path.hasNextNode() || path.nextNode().turns != 0 || !pathIsSafeForMvp(hero, path, destination, allowDestinationBattle, allowedBattleGuard))
 		return false;
+
+	if(pathUsesTeleport(path))
+		logGlobal->info("AHDBG PATH_TELEPORT hero=%s action=%s from=%s target=%s nodes=%d",
+			hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
+			hero->visitablePos().toString(), destination.toString(), static_cast<int>(path.nodes.size()));
 
 	const CGPathNode * destinationNode = paths->getPathInfo(destination);
 	const int destinationTurns = destinationNode ? destinationNode->turns : -1;
@@ -2267,7 +2334,7 @@ int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
 		++diagnosticsMergeRequests;
 		logGlobal->info("AHDBG MERGE_REQUEST hero=%s creature=%d immediateReturn=%d status=DISPATCHED",
 			hero->getNameTextID(), creature.getNum(), immediateResult);
-		logGlobal->info("AutoHeroes v1.7: duplicate army stack merge requested hero=%s creature=%d",
+		logGlobal->info("AutoHeroes v1.7.2: duplicate army stack merge requested hero=%s creature=%d",
 			hero->getNameTextID(), creature.getNum());
 	}
 
@@ -2286,7 +2353,7 @@ void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 	{
 		diagnosticsRecruitAmount += recruited;
 		logGlobal->info("AHDBG RECRUIT_BATCH hero=%s intendedAmount=%d", hero->getNameTextID(), recruited);
-		logGlobal->info("AutoHeroes v1.7: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
+		logGlobal->info("AutoHeroes v1.7.2: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
 		owner.closeAllDialogs();
 	}
 }
@@ -2740,7 +2807,124 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 		}
 	}
 
-	return best;
+	if(best)
+		return best;
+
+	// If the visible frontier is exhausted, a one-exit teleporter is a safe
+	// strategic probe. We only probe channels with one known exit to avoid a
+	// random multi-exit jump; after crossing, normal frontier exploration takes over.
+	std::optional<int3> bestPortal;
+	int bestPortalTurns = std::numeric_limits<int>::max();
+	float bestPortalCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					const auto * teleport = dynamic_cast<const CGTeleport *>(object);
+					if(!teleport || !teleport->isEntrance() || attemptedPortalEntrances.count(teleport->id))
+						continue;
+
+					const auto exits = teleport->getAllExits(true);
+					if(exits.size() != 1)
+						continue;
+
+					const auto * exitObject = owner.cb->getObj(exits.front(), false);
+					if(!exitObject)
+						continue;
+
+					const int3 exitPos = exitObject->visitablePos();
+					bool exitNeedsExploration = !owner.cb->isVisible(exitPos);
+					for(int dx = -1; dx <= 1 && !exitNeedsExploration; ++dx)
+						for(int dy = -1; dy <= 1 && !exitNeedsExploration; ++dy)
+						{
+							if(dx == 0 && dy == 0)
+								continue;
+							const int nx = exitPos.x + dx;
+							const int ny = exitPos.y + dy;
+							if(nx < 0 || ny < 0 || nx >= mapSize.x || ny >= mapSize.y)
+								continue;
+							if(!owner.cb->isVisible(int3(nx, ny, exitPos.z)))
+								exitNeedsExploration = true;
+						}
+
+					if(!exitNeedsExploration)
+						continue;
+
+					const int3 destination = teleport->visitablePos();
+					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+						continue;
+					if(owner.cb->guardingCreaturePosition(destination) != int3(-1, -1, -1))
+						continue;
+
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO)
+						|| !pathIsSafeForMvp(hero, path, destination, false))
+						continue;
+
+					logGlobal->info("AHDBG PORTAL_CANDIDATE hero=%s objectId=%d coord=%s exit=%s turns=%d cost=%.1f result=ACCEPT",
+						hero->getNameTextID(), teleport->id.getNum(), destination.toString(), exitPos.toString(), node->turns, node->cost);
+
+					if(node->turns < bestPortalTurns || (node->turns == bestPortalTurns && node->cost < bestPortalCost))
+					{
+						bestPortal = destination;
+						bestPortalTurns = node->turns;
+						bestPortalCost = node->cost;
+					}
+				}
+			}
+
+	if(bestPortal)
+		return bestPortal;
+
+	// If a hero has exhausted useful work on the remote side of a portal,
+	// allow Explore to route back to the nearest owned town, but only when the
+	// route actually requires teleportation. This avoids recalling ordinary scouts.
+	std::optional<int3> bestHome;
+	int bestHomeTurns = std::numeric_limits<int>::max();
+	float bestHomeCost = std::numeric_limits<float>::max();
+
+	for(const auto * town : owner.localState->getOwnedTowns())
+	{
+		if(!town)
+			continue;
+
+		const int3 destination = town->visitablePos();
+		if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+			continue;
+
+		const CGPathNode * node = paths->getPathInfo(destination);
+		if(!node || !node->reachable())
+			continue;
+
+		CGPath path;
+		if(!paths->getPath(path, destination, EPathfindingLayer::AUTO)
+			|| !pathUsesTeleport(path)
+			|| !pathIsSafeForMvp(hero, path, destination, false))
+			continue;
+
+		logGlobal->info("AHDBG RETURN_HOME_CANDIDATE hero=%s town=%s turns=%d cost=%.1f viaTeleport=1 result=ACCEPT",
+			hero->getNameTextID(), destination.toString(), node->turns, node->cost);
+
+		if(node->turns < bestHomeTurns || (node->turns == bestHomeTurns && node->cost < bestHomeCost))
+		{
+			bestHome = destination;
+			bestHomeTurns = node->turns;
+			bestHomeCost = node->cost;
+		}
+	}
+
+	return bestHome;
 }
 
 bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard) const
@@ -2756,9 +2940,8 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
 		const bool guardedByAllowedGuard = allowedBattleGuard && guardingCreature == *allowedBattleGuard;
 		const bool allowedCombatNode = allowDestinationBattle && (isDestination || isAllowedGuard || guardedByAllowedGuard);
 
-		if(isTeleportAction(node.action))
-			return false;
-
+		// Teleport nodes are supported by HeroMovementController. Battle safety
+		// is still checked below, including TELEPORT_BATTLE.
 		// VCMI can place BATTLE/GUARDED on an approach tile. For a direct
 		// neutral fight the allowed guard is the selected monster; for guarded
 		// collection it is the monster guarding the selected resource tile.
@@ -2771,7 +2954,7 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
 
 		if(node.coord != hero->visitablePos() && !isDestination)
 		{
-			if(node.action != EPathNodeAction::NORMAL && node.action != EPathNodeAction::UNKNOWN)
+			if(!isTeleportAction(node.action) && node.action != EPathNodeAction::NORMAL && node.action != EPathNodeAction::UNKNOWN)
 			{
 				if(!(isBattleAction(node.action) && (isAllowedGuard || guardedByAllowedGuard)))
 					return false;
