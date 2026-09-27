@@ -144,6 +144,15 @@ JsonNode serializeHeroConfig(const HeroConfig & config)
 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
 	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
+	node["transporterMode"].Bool() = config.transporterMode;
+	JsonNode & transporterTowns = node["transporterSourceTowns"];
+	transporterTowns.Vector().clear();
+	for(const auto & townId : config.transporterSourceTowns)
+		transporterTowns.Vector().emplace_back(townId.getNum());
+	if(config.transporterTargetHero)
+		node["transporterTargetHero"].Integer() = config.transporterTargetHero->getNum();
+	else
+		node["transporterTargetHero"].clear();
 
 	switch(config.combatPolicy)
 	{
@@ -182,6 +191,18 @@ HeroConfig deserializeHeroConfig(const JsonNode & node)
 	result.movementRadius = std::max(0, readInt(node, "movementRadius", 0));
 	result.maxForeignFactionSlots = std::clamp(readInt(node, "maxForeignFactionSlots", 0), -1, 7);
 	result.allowSecondarySkillLearning = readBool(node, "allowSecondarySkillLearning", false);
+	result.transporterMode = readBool(node, "transporterMode", false);
+
+	const JsonNode & transporterTowns = node["transporterSourceTowns"];
+	if(transporterTowns.isVector())
+	{
+		for(const JsonNode & entry : transporterTowns.Vector())
+			if(entry.isNumber())
+				result.transporterSourceTowns.emplace(static_cast<int>(entry.Integer()));
+	}
+	const int transporterTarget = readInt(node, "transporterTargetHero", -1);
+	if(transporterTarget >= 0)
+		result.transporterTargetHero = ObjectInstanceID(transporterTarget);
 
 	const std::string recruitment = readString(node, "recruitmentScope", "heroFactionOnly");
 	result.recruitmentScope = recruitment == "unrestricted"
@@ -277,6 +298,15 @@ void writeHeroConfig(ObjectInstanceID heroId, const HeroConfig & config)
 	node["decisionPolicy"].String() = config.decisionPolicy == DecisionPolicy::AUTO_ACCEPT ? "autoAccept" : "askHuman";
 	node["treasureChestChoice"].String() = config.treasureChestChoice == TreasureChestChoice::EXPERIENCE ? "experience" : "gold";
 	node["allowSecondarySkillLearning"].Bool() = config.allowSecondarySkillLearning;
+	node["transporterMode"].Bool() = config.transporterMode;
+	JsonNode & transporterTowns = node["transporterSourceTowns"];
+	transporterTowns.Vector().clear();
+	for(const auto & townId : config.transporterSourceTowns)
+		transporterTowns.Vector().emplace_back(townId.getNum());
+	if(config.transporterTargetHero)
+		node["transporterTargetHero"].Integer() = config.transporterTargetHero->getNum();
+	else
+		node["transporterTargetHero"].clear();
 
 	switch(config.combatPolicy)
 	{
