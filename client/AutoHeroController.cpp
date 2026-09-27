@@ -634,7 +634,11 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = endTurnWhenFinished;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
@@ -695,7 +699,11 @@ void AutoHeroController::cancel()
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -755,6 +763,7 @@ void AutoHeroController::update()
 		if(transportSettleTicks == 0)
 		{
 			owner.invalidatePaths();
+			verifyPendingTransportDelivery();
 			const auto * hero = activeHero();
 			logGlobal->info("AHDBG TRANSPORT_SETTLED hero=%s", hero ? hero->getNameTextID() : "<none>");
 			process();
@@ -883,7 +892,22 @@ void AutoHeroController::update()
 		}
 
 		waitingForTownUpgrade = false;
-		recruitAfterTownUpgrades(hero);
+		const int recruited = recruitAfterTownUpgrades(hero);
+
+		if(transportTownPrep)
+		{
+			transportTownPrep = false;
+			const bool readyForDelivery = recruited > 0 || transporterHasCargo(hero);
+			setTransporterNeedsSource(hero, !readyForDelivery);
+			transportSettleTicks = recruited > 0 ? 20 : 8;
+			logGlobal->info("AHDBG TRANSPORT_SOURCE_READY hero=%s recruited=%d cargo=%d needsSource=%d settle=%d",
+				hero->getNameTextID(), recruited, transporterHasCargo(hero) ? 1 : 0,
+				readyForDelivery ? 0 : 1, transportSettleTicks);
+			if(owner.showingDialog->isBusy())
+				waitingForDialog = true;
+			return;
+		}
+
 		if(owner.showingDialog->isBusy())
 		{
 			waitingForDialog = true;
@@ -921,10 +945,20 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		hero->visitablePos().toString(), movementStartPoints, hero->movementPointsRemaining(), moved ? 1 : 0);
 	if(!moved)
 	{
+		if(pendingQueryReplies > 0 || querySettleTicks > 0 || waitingForDialog || owner.showingDialog->isBusy())
+		{
+			encounterGraceTicks = std::max(encounterGraceTicks, 24);
+			logGlobal->info("AHDBG MOVE_RETRY_AFTER_QUERY hero=%s action=%s pending=%d settle=%d grace=%d",
+				hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
+				pendingQueryReplies, querySettleTicks, encounterGraceTicks);
+			return;
+		}
+
 		++diagnosticsAnomalies;
 		logGlobal->warn("AHDBG ANOMALY type=no_movement_progress hero=%s action=%s", hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none");
-		logGlobal->warn("AutoHeroes v0.8: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
+		logGlobal->warn("AutoHeroes v1.8.1: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
 		advanceHero();
+		encounterGraceTicks = 12;
 		return;
 	}
 
@@ -964,10 +998,6 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		activeShrineKnownSpellsBefore = 0;
 	}
 
-	const auto movementConfig = AutoHeroes::readHeroConfig(hero->id);
-	if(movementConfig.transporterMode && loadTransporterAtCurrentTown(hero, movementConfig))
-		return;
-
 	if(activeAction && *activeAction == AutoHeroes::Action::RECRUIT_CREATURES)
 	{
 		const int upgradeRequests = upgradeArmyInCurrentTown(hero);
@@ -994,24 +1024,15 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 	}
 
 	const bool possibleEncounter = activeAction && (*activeAction == AutoHeroes::Action::FIGHT_NEUTRALS || activeBattleGuard.has_value());
-	if(possibleEncounter)
-	{
-		encounterGraceTicks = 4;
-		logGlobal->info("AHDBG ENCOUNTER_GRACE_START hero=%s action=%s guard=%s ticks=%d",
-			hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
-			activeBattleGuard ? activeBattleGuard->toString() : "<none>", encounterGraceTicks);
-	}
+	encounterGraceTicks = std::max(encounterGraceTicks, possibleEncounter ? 24 : 18);
+	logGlobal->info("AHDBG POST_ACTION_GRACE hero=%s action=%s guard=%s ticks=%d",
+		hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
+		activeBattleGuard ? activeBattleGuard->toString() : "<none>", encounterGraceTicks);
 
 	if(owner.showingDialog->isBusy())
-	{
 		waitingForDialog = true;
-		return;
-	}
 
-	if(possibleEncounter)
-		return;
-
-	process();
+	return;
 }
 
 void AutoHeroController::finishRun()
@@ -1032,7 +1053,11 @@ void AutoHeroController::finishRun()
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -1099,7 +1124,11 @@ void AutoHeroController::advanceHero()
 	shrineVerifyTicks = 0;
 	encounterGraceTicks = 0;
 	transportSettleTicks = 0;
-	transportDeliveredThisHero = false;
+	transportTownPrep = false;
+	pendingTransportDelivery = false;
+	transportCarrierUnitsBefore = 0;
+	transportRecipientUnitsBefore = 0;
+	pendingTransportRecipient.reset();
 	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
@@ -1169,7 +1198,8 @@ void AutoHeroController::process()
 		if(!hero || hero->isGarrisoned() || hero->movementPointsRemaining() <= 100 || !AutoHeroes::isHeroEnabled(hero->id))
 		{
 			advanceHero();
-			continue;
+			encounterGraceTicks = 12;
+			return;
 		}
 
 		// Safety valve for maps that keep producing the same revisitable target.
@@ -1179,14 +1209,17 @@ void AutoHeroController::process()
 			logGlobal->warn("AHDBG ANOMALY type=step_limit hero=%s steps=%d", hero->getNameTextID(), stepsForCurrentHero);
 			logGlobal->warn("AutoHeroes v0.8: step limit reached for hero %s", hero->getNameTextID());
 			advanceHero();
-			continue;
+			encounterGraceTicks = 12;
+			return;
 		}
 
 		if(startNextAction(hero))
 			return;
 
-		logGlobal->info("AutoHeroes v1.0: no configured target found for hero %s", hero->getNameTextID());
+		logGlobal->info("AutoHeroes v1.8.1: no configured target found for hero %s", hero->getNameTextID());
 		advanceHero();
+		encounterGraceTicks = 12;
+		return;
 	}
 
 	logGlobal->info("AutoHeroes v1.0: configured heroes finished");
@@ -2629,10 +2662,10 @@ int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
 	return requested;
 }
 
-void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
+int AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 {
 	if(!hero)
-		return;
+		return 0;
 
 	const auto config = AutoHeroes::readHeroConfig(hero->id);
 	logArmyState(hero, "pre_recruit");
@@ -2644,6 +2677,7 @@ void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 		logGlobal->info("AutoHeroes v1.7.2: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
 		owner.closeAllDialogs();
 	}
+	return recruited;
 }
 
 int AutoHeroController::recruitFromCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config)
@@ -3223,7 +3257,9 @@ bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGP
 	for(const auto & node : path.nodes)
 	{
 		const bool isDestination = node.coord == destination;
-		const int3 guardingCreature = owner.cb->guardingCreaturePosition(node.coord);
+		const int3 guardingCreature = owner.cb->isVisible(node.coord)
+			? owner.cb->guardingCreaturePosition(node.coord)
+			: int3(-1, -1, -1);
 		const bool isAllowedGuard = allowedBattleGuard && node.coord == *allowedBattleGuard;
 		const bool guardedByAllowedGuard = allowedBattleGuard && guardingCreature == *allowedBattleGuard;
 		const bool allowedCombatNode = allowDestinationBattle && (isDestination || isAllowedGuard || guardedByAllowedGuard);
