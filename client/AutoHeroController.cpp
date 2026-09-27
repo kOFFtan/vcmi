@@ -11,15 +11,19 @@
 #include "GameEngine.h"
 
 #include "../lib/autoheroes/AutoHeroConfig.h"
+#include "../lib/GameConstants.h"
 #include "../lib/ConditionalWait.h"
 #include "../lib/callback/CCallback.h"
 #include "../lib/mapObjects/CGHeroInstance.h"
 #include "../lib/mapObjects/CGObjectInstance.h"
 #include "../lib/mapObjects/CGDwelling.h"
 #include "../lib/mapObjects/CGTownInstance.h"
+#include "../lib/mapObjects/CRewardableObject.h"
 #include "../lib/mapObjects/IOwnableObject.h"
 #include "../lib/mapObjects/army/CArmedInstance.h"
 #include "../lib/pathfinder/CGPathNode.h"
+
+#include <vcmi/spells/Spell.h>
 
 namespace
 {
@@ -89,6 +93,35 @@ bool isMagicShrineTarget(const CGObjectInstance * target)
 	return target->ID == Obj::SHRINE_OF_MAGIC_INCANTATION
 		|| target->ID == Obj::SHRINE_OF_MAGIC_GESTURE
 		|| target->ID == Obj::SHRINE_OF_MAGIC_THOUGHT;
+}
+
+constexpr int LOCAL_OPPORTUNITY_RADIUS = 5;
+
+int localTileDistance(const int3 & from, const int3 & to)
+{
+	if(from.z != to.z)
+		return std::numeric_limits<int>::max();
+
+	return std::max(std::abs(from.x - to.x), std::abs(from.y - to.y));
+}
+
+std::optional<SpellID> magicShrineSpell(const CGObjectInstance * target)
+{
+	const auto * shrine = dynamic_cast<const CRewardableObject *>(target);
+	if(!shrine)
+		return std::nullopt;
+
+	for(const auto & visit : shrine->configuration.info)
+	{
+		if(visit.visitType != Rewardable::EEventType::EVENT_FIRST_VISIT)
+			continue;
+		if(!visit.reward.spells.empty())
+			return visit.reward.spells.front();
+		if(!visit.limiter.canLearnSpells.empty())
+			return visit.limiter.canLearnSpells.front();
+	}
+
+	return std::nullopt;
 }
 
 bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLearning)
@@ -298,7 +331,7 @@ void AutoHeroController::onBattleStarted()
 		activeAction ? actionName(*activeAction) : "none",
 		activeBattleGuard ? activeBattleGuard->toString() : "<none>",
 		hero ? hero->movementPointsRemaining() : -1);
-	logGlobal->info("AutoHeroes v1.6.3: battle started for active auto hero; automation paused until battle state is fully resolved");
+	logGlobal->info("AutoHeroes v1.7: battle started for active auto hero; automation paused until battle state is fully resolved");
 }
 
 void AutoHeroController::onBattleFinished()
@@ -317,7 +350,7 @@ void AutoHeroController::onBattleFinished()
 	logGlobal->info("AHDBG BATTLE_END hero=%s mp=%d cleanupTicks=%d battles=%d/%d",
 		hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1, battleCleanupTicks,
 		diagnosticsBattlesFinished, diagnosticsBattlesStarted);
-	logGlobal->info("AutoHeroes v1.6.3: battle finished; waiting for battle state cleanup before resuming");
+	logGlobal->info("AutoHeroes v1.7: battle finished; waiting for battle state cleanup before resuming");
 }
 
 void AutoHeroController::onDialogResolved()
@@ -383,6 +416,20 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	activeAction.reset();
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
+	activeSpellbookAcquisition = false;
+	activeSpellbookTown.reset();
+	waitingForSpellbook = false;
+	spellbookWaitTicks = 0;
+	spellbookKnownSpellsBefore = 0;
+	attemptedSpellbookTowns.clear();
+	attemptedShrines.clear();
+	activeShrineObject.reset();
+	activeShrineDestination.reset();
+	activeShrineSpell.reset();
+	activeShrineKnownSpellsBefore = 0;
+	pendingShrineObject.reset();
+	pendingShrineSpell.reset();
+	pendingShrineKnownSpellsBefore = 0;
 	pendingUpgradeAudit.clear();
 	diagnosticsActions = 0;
 	diagnosticsMoves = 0;
@@ -394,7 +441,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	diagnosticsAnomalies = 0;
 	const int currentDay = owner.cb ? owner.cb->getCalendar().getCurrentDay() : -1;
 	logGlobal->info("AHDBG RUN_START day=%d heroes=%d endTurn=%d", currentDay, static_cast<int>(heroQueue.size()), endTurnAfterRun ? 1 : 0);
-	logGlobal->info("AutoHeroes v1.6.3: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
+	logGlobal->info("AutoHeroes v1.7: starting local controller for %d configured heroes%s", static_cast<int>(heroQueue.size()), endTurnAfterRun ? " before End Turn" : "");
 	process();
 	return true;
 }
@@ -422,6 +469,20 @@ void AutoHeroController::cancel()
 	activeAction.reset();
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
+	activeSpellbookAcquisition = false;
+	activeSpellbookTown.reset();
+	waitingForSpellbook = false;
+	spellbookWaitTicks = 0;
+	spellbookKnownSpellsBefore = 0;
+	attemptedSpellbookTowns.clear();
+	attemptedShrines.clear();
+	activeShrineObject.reset();
+	activeShrineDestination.reset();
+	activeShrineSpell.reset();
+	activeShrineKnownSpellsBefore = 0;
+	pendingShrineObject.reset();
+	pendingShrineSpell.reset();
+	pendingShrineKnownSpellsBefore = 0;
 	pendingUpgradeAudit.clear();
 }
 
@@ -432,6 +493,49 @@ void AutoHeroController::update()
 
 	if(waitingForBattle)
 		return;
+
+	if(waitingForSpellbook)
+	{
+		const CGHeroInstance * hero = activeHero();
+		if(!hero)
+		{
+			waitingForSpellbook = false;
+			activeSpellbookAcquisition = false;
+			activeSpellbookTown.reset();
+			advanceHero();
+			process();
+			return;
+		}
+
+		if(hero->hasSpellbook())
+		{
+			const int knownAfter = static_cast<int>(hero->getSpellsInSpellbook().size());
+			logGlobal->info("AHDBG SPELLBOOK_ACQUIRED hero=%s knownBefore=%d knownAfter=%d learnedFromGuild=%d",
+				hero->getNameTextID(), spellbookKnownSpellsBefore, knownAfter, std::max(0, knownAfter - spellbookKnownSpellsBefore));
+			waitingForSpellbook = false;
+			spellbookWaitTicks = 0;
+			activeSpellbookAcquisition = false;
+			activeSpellbookTown.reset();
+			owner.invalidatePaths();
+			process();
+			return;
+		}
+
+		if(spellbookWaitTicks > 0)
+		{
+			--spellbookWaitTicks;
+			return;
+		}
+
+		++diagnosticsAnomalies;
+		logGlobal->warn("AHDBG SPELLBOOK_ACQUIRED hero=%s result=FAILED reason=timeout", hero->getNameTextID());
+		logGlobal->warn("AHDBG ANOMALY type=spellbook_purchase_not_observed hero=%s", hero->getNameTextID());
+		waitingForSpellbook = false;
+		activeSpellbookAcquisition = false;
+		activeSpellbookTown.reset();
+		process();
+		return;
+	}
 
 	if(encounterGraceTicks > 0)
 	{
@@ -470,7 +574,7 @@ void AutoHeroController::update()
 		owner.invalidatePaths();
 		const auto * hero = activeHero();
 		logGlobal->info("AHDBG POST_BATTLE_RESUME hero=%s mp=%d", hero ? hero->getNameTextID() : "<none>", hero ? hero->movementPointsRemaining() : -1);
-		logGlobal->info("AutoHeroes v1.6.3: post-battle state refreshed; resuming automation");
+		logGlobal->info("AutoHeroes v1.7: post-battle state refreshed; resuming automation");
 		return;
 	}
 
@@ -501,7 +605,7 @@ void AutoHeroController::update()
 			if(mergeRequests > 0)
 			{
 				townUpgradeDelayTicks = 20;
-				logGlobal->info("AutoHeroes v1.6.3: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
+				logGlobal->info("AutoHeroes v1.7: requested %d duplicate-stack merges after town upgrades; waiting for server state", mergeRequests);
 				return;
 			}
 		}
@@ -556,6 +660,29 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 		return;
 	}
 
+	if(activeSpellbookAcquisition && activeSpellbookTown)
+	{
+		const auto * town = hero->getVisitedTown();
+		if(town && town->id == *activeSpellbookTown)
+		{
+			if(requestSpellbookPurchase(hero, town))
+				return;
+			activeSpellbookAcquisition = false;
+			activeSpellbookTown.reset();
+		}
+	}
+
+	if(activeShrineObject && activeShrineDestination && hero->visitablePos() == *activeShrineDestination)
+	{
+		pendingShrineObject = activeShrineObject;
+		pendingShrineSpell = activeShrineSpell;
+		pendingShrineKnownSpellsBefore = activeShrineKnownSpellsBefore;
+		activeShrineObject.reset();
+		activeShrineDestination.reset();
+		activeShrineSpell.reset();
+		activeShrineKnownSpellsBefore = 0;
+	}
+
 	if(activeAction && *activeAction == AutoHeroes::Action::RECRUIT_CREATURES)
 	{
 		const int upgradeRequests = upgradeArmyInCurrentTown(hero);
@@ -564,7 +691,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 			waitingForTownUpgrade = true;
 			townUpgradeDelayTicks = 20;
 			mergeAfterTownUpgrade = true;
-			logGlobal->info("AutoHeroes v1.6.3: dispatched %d army upgrade requests before town recruitment; waiting for authoritative server state", upgradeRequests);
+			logGlobal->info("AutoHeroes v1.7: dispatched %d army upgrade requests before town recruitment; waiting for authoritative server state", upgradeRequests);
 			return;
 		}
 
@@ -574,7 +701,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 			waitingForTownUpgrade = true;
 			townUpgradeDelayTicks = 20;
 			mergeAfterTownUpgrade = false;
-			logGlobal->info("AutoHeroes v1.6.3: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
+			logGlobal->info("AutoHeroes v1.7: requested %d duplicate-stack merges before town recruitment; waiting for server state", mergeRequests);
 			return;
 		}
 
@@ -623,6 +750,20 @@ void AutoHeroController::finishRun()
 	activeAction.reset();
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
+	activeSpellbookAcquisition = false;
+	activeSpellbookTown.reset();
+	waitingForSpellbook = false;
+	spellbookWaitTicks = 0;
+	spellbookKnownSpellsBefore = 0;
+	attemptedSpellbookTowns.clear();
+	attemptedShrines.clear();
+	activeShrineObject.reset();
+	activeShrineDestination.reset();
+	activeShrineSpell.reset();
+	activeShrineKnownSpellsBefore = 0;
+	pendingShrineObject.reset();
+	pendingShrineSpell.reset();
+	pendingShrineKnownSpellsBefore = 0;
 	stepsForCurrentHero = 0;
 	pendingUpgradeAudit.clear();
 
@@ -633,7 +774,7 @@ void AutoHeroController::finishRun()
 	}
 	logGlobal->info("AHDBG RUN_SUMMARY actions=%d moves=%d battlesStarted=%d battlesFinished=%d upgradeRequests=%d mergeRequests=%d recruited=%d anomalies=%d",
 		diagnosticsActions, diagnosticsMoves, diagnosticsBattlesStarted, diagnosticsBattlesFinished, diagnosticsUpgradeRequests, diagnosticsMergeRequests, diagnosticsRecruitAmount, diagnosticsAnomalies);
-	logGlobal->info("AutoHeroes v1.6.3: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
+	logGlobal->info("AutoHeroes v1.7: local controller finished%s", shouldEndTurn ? "; continuing End Turn" : "; human turn remains active");
 	owner.onAutoHeroesFinished(shouldEndTurn);
 }
 
@@ -643,6 +784,20 @@ void AutoHeroController::advanceHero()
 	activeAction.reset();
 	activeBattleGuard.reset();
 	activeCollectTreasureChest = false;
+	activeSpellbookAcquisition = false;
+	activeSpellbookTown.reset();
+	waitingForSpellbook = false;
+	spellbookWaitTicks = 0;
+	spellbookKnownSpellsBefore = 0;
+	attemptedSpellbookTowns.clear();
+	attemptedShrines.clear();
+	activeShrineObject.reset();
+	activeShrineDestination.reset();
+	activeShrineSpell.reset();
+	activeShrineKnownSpellsBefore = 0;
+	pendingShrineObject.reset();
+	pendingShrineSpell.reset();
+	pendingShrineKnownSpellsBefore = 0;
 	encounterGraceTicks = 0;
 	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
@@ -654,7 +809,7 @@ void AutoHeroController::advanceHero()
 
 void AutoHeroController::process()
 {
-	if(!running || waitingForMovement || waitingForBattle || battleCleanupTicks > 0 || waitingForTownUpgrade)
+	if(!running || waitingForMovement || waitingForBattle || waitingForSpellbook || battleCleanupTicks > 0 || waitingForTownUpgrade)
 		return;
 
 	if(!owner.makingTurn)
@@ -682,11 +837,25 @@ void AutoHeroController::process()
 					startingHero->getNameTextID(), startingHero->id.getNum(), startingHero->visitablePos().toString(), startingHero->movementPointsRemaining(),
 					cfg.movementRadius, AutoHeroes::recruitmentBudgetPercent(cfg.recruitmentBudget), static_cast<int>(cfg.combatPolicy),
 					static_cast<int>(cfg.decisionPolicy), static_cast<int>(cfg.treasureChestChoice), cfg.allowSecondarySkillLearning ? 1 : 0);
+				logGlobal->info("AHDBG MAGIC_STATE hero=%s hasSpellbook=%d maxSpellLevel=%d knownSpells=%d",
+					startingHero->getNameTextID(), startingHero->hasSpellbook() ? 1 : 0, startingHero->maxSpellLevel(),
+					static_cast<int>(startingHero->getSpellsInSpellbook().size()));
+				logGlobal->info("AHDBG PRIORITY hero=%s collect=%d level=%d recruit=%d explore=%d capture=%d fight=%d localRadius=%d",
+					startingHero->getNameTextID(),
+					cfg.priorityOf(AutoHeroes::Action::COLLECT_RESOURCES) + 1,
+					cfg.priorityOf(AutoHeroes::Action::LEVEL_UP) + 1,
+					cfg.priorityOf(AutoHeroes::Action::RECRUIT_CREATURES) + 1,
+					cfg.priorityOf(AutoHeroes::Action::EXPLORE) + 1,
+					cfg.priorityOf(AutoHeroes::Action::CAPTURE_OBJECTS) + 1,
+					cfg.priorityOf(AutoHeroes::Action::FIGHT_NEUTRALS) + 1,
+					LOCAL_OPPORTUNITY_RADIUS);
 				logArmyState(startingHero, "hero_start");
 			}
 		}
 
 		const CGHeroInstance * hero = activeHero();
+		if(hero)
+			evaluatePendingShrineResult(hero);
 		if(!hero || hero->isGarrisoned() || hero->movementPointsRemaining() <= 100 || !AutoHeroes::isHeroEnabled(hero->id))
 		{
 			advanceHero();
@@ -717,98 +886,264 @@ void AutoHeroController::process()
 bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 {
 	const AutoHeroes::HeroConfig config = AutoHeroes::readHeroConfig(hero->id);
+	const auto paths = owner.getPathsInfo(hero);
 
-	for(const auto action : config.priority)
+	struct ActionCandidate
 	{
-		if(!config.allows(action))
-			continue;
-
+		AutoHeroes::Action action = AutoHeroes::Action::COLLECT_RESOURCES;
+		int priorityRank = -1;
 		std::optional<int3> destination;
 		bool allowDestinationBattle = false;
 		std::optional<int3> allowedBattleGuard;
+		bool spellbook = false;
+		int turns = -1;
+		float cost = -1.0f;
+		int tileDistance = std::numeric_limits<int>::max();
+	};
+
+	auto fillMetrics = [&](ActionCandidate & candidate)
+	{
+		if(!candidate.destination)
+			return;
+
+		candidate.tileDistance = localTileDistance(hero->visitablePos(), *candidate.destination);
+		if(*candidate.destination == hero->visitablePos())
+		{
+			candidate.turns = 0;
+			candidate.cost = 0.0f;
+			return;
+		}
+
+		if(paths)
+		{
+			if(const auto * node = paths->getPathInfo(*candidate.destination))
+			{
+				candidate.turns = node->turns;
+				candidate.cost = node->cost;
+			}
+		}
+	};
+
+	auto destinationIsBetter = [&](const int3 & lhs, const int3 & rhs)
+	{
+		int lhsTurns = lhs == hero->visitablePos() ? 0 : std::numeric_limits<int>::max();
+		int rhsTurns = rhs == hero->visitablePos() ? 0 : std::numeric_limits<int>::max();
+		float lhsCost = lhs == hero->visitablePos() ? 0.0f : std::numeric_limits<float>::max();
+		float rhsCost = rhs == hero->visitablePos() ? 0.0f : std::numeric_limits<float>::max();
+
+		if(paths)
+		{
+			if(const auto * node = paths->getPathInfo(lhs))
+			{
+				lhsTurns = node->turns;
+				lhsCost = node->cost;
+			}
+			if(const auto * node = paths->getPathInfo(rhs))
+			{
+				rhsTurns = node->turns;
+				rhsCost = node->cost;
+			}
+		}
+
+		if(lhsTurns != rhsTurns)
+			return lhsTurns < rhsTurns;
+		if(lhsCost != rhsCost)
+			return lhsCost < rhsCost;
+		return localTileDistance(hero->visitablePos(), lhs) < localTileDistance(hero->visitablePos(), rhs);
+	};
+
+	std::optional<ActionCandidate> firstPriorityFallback;
+	std::optional<ActionCandidate> selected;
+
+	for(size_t rank = 0; rank < config.priority.size(); ++rank)
+	{
+		const auto action = config.priority[rank];
+		if(!config.allows(action))
+			continue;
+
+		ActionCandidate candidate;
+		candidate.action = action;
+		candidate.priorityRank = static_cast<int>(rank) + 1;
+
 		switch(action)
 		{
 		case AutoHeroes::Action::COLLECT_RESOURCES:
-			destination = findCollectTarget(hero, config);
+			candidate.destination = findCollectTarget(hero, config);
 			break;
 		case AutoHeroes::Action::LEVEL_UP:
-			destination = findLevelTarget(hero, config);
+		{
+			const auto levelTarget = findLevelTarget(hero, config);
+			const auto spellbookTarget = findSpellbookTarget(hero, config);
+			if(spellbookTarget && (!levelTarget || destinationIsBetter(*spellbookTarget, *levelTarget)))
+			{
+				candidate.destination = spellbookTarget;
+				candidate.spellbook = true;
+			}
+			else
+			{
+				candidate.destination = levelTarget;
+			}
 			break;
+		}
 		case AutoHeroes::Action::RECRUIT_CREATURES:
-			destination = findRecruitTarget(hero, config);
+			candidate.destination = findRecruitTarget(hero, config);
 			break;
 		case AutoHeroes::Action::EXPLORE:
-			destination = findExploreTarget(hero, config);
+			candidate.destination = findExploreTarget(hero, config);
 			break;
 		case AutoHeroes::Action::CAPTURE_OBJECTS:
-			destination = findCaptureTarget(hero, config);
+			candidate.destination = findCaptureTarget(hero, config);
 			break;
 		case AutoHeroes::Action::FIGHT_NEUTRALS:
-			destination = findFightTarget(hero, config);
-			allowDestinationBattle = destination.has_value();
-			if(destination)
-				allowedBattleGuard = *destination;
+			candidate.destination = findFightTarget(hero, config);
+			candidate.allowDestinationBattle = candidate.destination.has_value();
+			if(candidate.destination)
+				candidate.allowedBattleGuard = *candidate.destination;
 			break;
 		}
 
-		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s result=%s target=%s",
-			hero->getNameTextID(), actionName(action), destination ? "TARGET" : "NONE", destination ? destination->toString() : "<none>");
+		fillMetrics(candidate);
+		const bool isLocal = candidate.destination && candidate.tileDistance <= LOCAL_OPPORTUNITY_RADIUS;
+		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s priorityRank=%d result=%s target=%s turns=%d cost=%.1f tileDistance=%d local=%d spellbook=%d",
+			hero->getNameTextID(), actionName(action), candidate.priorityRank,
+			candidate.destination ? "TARGET" : "NONE", candidate.destination ? candidate.destination->toString() : "<none>",
+			candidate.turns, candidate.cost, candidate.destination ? candidate.tileDistance : -1, isLocal ? 1 : 0, candidate.spellbook ? 1 : 0);
 
-		if(destination)
+		if(!candidate.destination)
+			continue;
+		if(isLocal)
 		{
-			if(action == AutoHeroes::Action::CAPTURE_OBJECTS)
+			selected = candidate;
+			break;
+		}
+		if(!firstPriorityFallback)
+			firstPriorityFallback = candidate;
+	}
+
+	if(!selected)
+		selected = firstPriorityFallback;
+	if(!selected || !selected->destination)
+		return false;
+
+	ActionCandidate candidate = *selected;
+	const int3 destination = *candidate.destination;
+	const bool localSelection = candidate.tileDistance <= LOCAL_OPPORTUNITY_RADIUS;
+	const char * selectionReason = localSelection ? "local_opportunity" : "priority_fallback";
+
+	if(candidate.action == AutoHeroes::Action::CAPTURE_OBJECTS)
+	{
+		for(const auto * object : owner.cb->getVisitableObjs(destination))
+		{
+			if(isEmptyNeutralTown(object))
 			{
-				for(const auto * object : owner.cb->getVisitableObjs(*destination))
-				{
-					if(isEmptyNeutralTown(object))
-					{
-						// Pathfinder may mark entry into an unowned town as BATTLE even
-						// when the town has no defenders. Allow that final interaction
-						// only for a town that we already verified to be truly empty.
-						allowDestinationBattle = true;
-						break;
-					}
-				}
+				candidate.allowDestinationBattle = true;
+				break;
 			}
-
-			activeAction = action;
-			activeBattleGuard.reset();
-			activeCollectTreasureChest = false;
-			if(action == AutoHeroes::Action::COLLECT_RESOURCES)
-			{
-				const int3 guardingCreature = owner.cb->guardingCreaturePosition(*destination);
-				if(guardingCreature != int3(-1, -1, -1))
-				{
-					allowedBattleGuard = guardingCreature;
-					activeBattleGuard = guardingCreature;
-					allowDestinationBattle = true;
-				}
-
-				for(const auto * object : owner.cb->getVisitableObjs(*destination))
-				{
-					if(object && (object->ID == Obj::TREASURE_CHEST || object->ID == Obj::SEA_CHEST))
-					{
-						activeCollectTreasureChest = true;
-						break;
-					}
-				}
-			}
-			if(action == AutoHeroes::Action::FIGHT_NEUTRALS && allowedBattleGuard)
-				activeBattleGuard = allowedBattleGuard;
-
-			++diagnosticsActions;
-			logGlobal->info("AHDBG ACTION_SELECT seq=%d hero=%s action=%s target=%s guarded=%d guard=%s mp=%d",
-				diagnosticsActions, hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? 1 : 0,
-				activeBattleGuard ? activeBattleGuard->toString() : "<none>", hero->movementPointsRemaining());
-			logGlobal->info("AutoHeroes v1.6.3: hero %s selected action=%s target=%s%s", hero->getNameTextID(), actionName(action), destination->toString(), activeBattleGuard ? " with guarded battle" : "");
-			if(startMovement(hero, *destination, allowDestinationBattle, allowedBattleGuard))
-				return true;
-			activeAction.reset();
-			activeBattleGuard.reset();
-			activeCollectTreasureChest = false;
 		}
 	}
 
+	activeAction = candidate.action;
+	activeBattleGuard.reset();
+	activeCollectTreasureChest = false;
+	activeSpellbookAcquisition = false;
+	activeSpellbookTown.reset();
+	activeShrineObject.reset();
+	activeShrineDestination.reset();
+	activeShrineSpell.reset();
+	activeShrineKnownSpellsBefore = 0;
+
+	if(candidate.action == AutoHeroes::Action::COLLECT_RESOURCES)
+	{
+		const int3 guardingCreature = owner.cb->guardingCreaturePosition(destination);
+		if(guardingCreature != int3(-1, -1, -1))
+		{
+			candidate.allowedBattleGuard = guardingCreature;
+			activeBattleGuard = guardingCreature;
+			candidate.allowDestinationBattle = true;
+		}
+
+		for(const auto * object : owner.cb->getVisitableObjs(destination))
+		{
+			if(object && (object->ID == Obj::TREASURE_CHEST || object->ID == Obj::SEA_CHEST))
+			{
+				activeCollectTreasureChest = true;
+				break;
+			}
+		}
+	}
+	if(candidate.action == AutoHeroes::Action::FIGHT_NEUTRALS && candidate.allowedBattleGuard)
+		activeBattleGuard = candidate.allowedBattleGuard;
+
+	const CGTownInstance * spellbookTown = nullptr;
+	if(candidate.spellbook)
+	{
+		for(const auto * object : owner.cb->getVisitableObjs(destination))
+		{
+			const auto * town = dynamic_cast<const CGTownInstance *>(object);
+			if(town && town->mageGuildLevel() > 0)
+			{
+				spellbookTown = town;
+				break;
+			}
+		}
+
+		if(!spellbookTown)
+		{
+			++diagnosticsAnomalies;
+			logGlobal->warn("AHDBG ANOMALY type=spellbook_target_missing_town hero=%s target=%s", hero->getNameTextID(), destination.toString());
+			activeAction.reset();
+			return false;
+		}
+
+		activeSpellbookAcquisition = true;
+		activeSpellbookTown = spellbookTown->id;
+	}
+	else if(candidate.action == AutoHeroes::Action::LEVEL_UP)
+	{
+		for(const auto * object : owner.cb->getVisitableObjs(destination))
+		{
+			if(!isMagicShrineTarget(object))
+				continue;
+			activeShrineObject = object->id;
+			activeShrineDestination = destination;
+			activeShrineSpell = magicShrineSpell(object);
+			activeShrineKnownSpellsBefore = static_cast<int>(hero->getSpellsInSpellbook().size());
+			break;
+		}
+	}
+
+	++diagnosticsActions;
+	logGlobal->info("AHDBG ACTION_SELECT seq=%d hero=%s action=%s target=%s priorityRank=%d turns=%d cost=%.1f tileDistance=%d local=%d selectionReason=%s spellbook=%d guarded=%d guard=%s mp=%d",
+		diagnosticsActions, hero->getNameTextID(), actionName(candidate.action), destination.toString(),
+		candidate.priorityRank, candidate.turns, candidate.cost, candidate.tileDistance, localSelection ? 1 : 0, selectionReason,
+		candidate.spellbook ? 1 : 0, activeBattleGuard ? 1 : 0,
+		activeBattleGuard ? activeBattleGuard->toString() : "<none>", hero->movementPointsRemaining());
+	logGlobal->info("AutoHeroes v1.7: hero %s selected action=%s target=%s reason=%s%s",
+		hero->getNameTextID(), actionName(candidate.action), destination.toString(), selectionReason,
+		candidate.spellbook ? " get-spellbook" : (activeBattleGuard ? " with guarded battle" : ""));
+
+	if(candidate.spellbook && destination == hero->visitablePos())
+	{
+		if(requestSpellbookPurchase(hero, spellbookTown))
+			return true;
+		activeSpellbookAcquisition = false;
+		activeSpellbookTown.reset();
+		activeAction.reset();
+		return false;
+	}
+
+	if(startMovement(hero, destination, candidate.allowDestinationBattle, candidate.allowedBattleGuard))
+		return true;
+
+	activeAction.reset();
+	activeBattleGuard.reset();
+	activeCollectTreasureChest = false;
+	activeSpellbookAcquisition = false;
+	activeSpellbookTown.reset();
+	activeShrineObject.reset();
+	activeShrineDestination.reset();
+	activeShrineSpell.reset();
+	activeShrineKnownSpellsBefore = 0;
 	return false;
 }
 
@@ -1020,18 +1355,64 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 					if(!isLevelUpTarget(object, config.allowSecondarySkillLearning))
 						continue;
 
-					const bool engineVisited = object->wasVisited(hero);
-					const bool shrineVisitorRecorded = isMagicShrineTarget(object)
-						&& hero->visitedObjects.count(object->id) != 0;
-
-					// Shrines are recorded by ChangeObjectVisitors. Use the hero visitor set
-					// directly as an additional source of truth because rewardable-object
-					// wasVisited() semantics can depend on visitMode/limiter settings.
-					if(engineVisited || shrineVisitorRecorded)
+					std::optional<SpellID> shrineSpell;
+					int shrineSpellLevel = -1;
+					if(isMagicShrineTarget(object))
 					{
-						if(isMagicShrineTarget(object))
-							logGlobal->info("AHDBG LEVEL_REJECT hero=%s object=%s coord=%s reason=shrine_visited engineVisited=%d heroVisitorRecorded=%d",
-								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString(), engineVisited ? 1 : 0, shrineVisitorRecorded ? 1 : 0);
+						shrineSpell = magicShrineSpell(object);
+						if(shrineSpell)
+						{
+							if(const auto * spell = shrineSpell->toEntity(LIBRARY))
+								shrineSpellLevel = spell->getLevel();
+						}
+
+						if(attemptedShrines.count(object->id))
+						{
+							logGlobal->info("AHDBG SHRINE_REJECT hero=%s object=%s coord=%s spell=%d spellLevel=%d reason=already_attempted_run",
+								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString(),
+								shrineSpell ? shrineSpell->getNum() : -1, shrineSpellLevel);
+							continue;
+						}
+						if(!hero->hasSpellbook())
+						{
+							logGlobal->info("AHDBG SHRINE_REJECT hero=%s object=%s coord=%s spell=%d spellLevel=%d reason=no_spellbook",
+								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString(),
+								shrineSpell ? shrineSpell->getNum() : -1, shrineSpellLevel);
+							continue;
+						}
+						if(shrineSpell && hero->spellbookContainsSpell(*shrineSpell))
+						{
+							logGlobal->info("AHDBG SHRINE_REJECT hero=%s object=%s coord=%s spell=%d spellLevel=%d reason=already_known",
+								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString(),
+								shrineSpell->getNum(), shrineSpellLevel);
+							continue;
+						}
+						if(shrineSpellLevel > hero->maxSpellLevel())
+						{
+							logGlobal->info("AHDBG SHRINE_REJECT hero=%s object=%s coord=%s spell=%d spellLevel=%d maxSpellLevel=%d reason=wisdom_too_low",
+								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString(),
+								shrineSpell ? shrineSpell->getNum() : -1, shrineSpellLevel, hero->maxSpellLevel());
+							continue;
+						}
+
+						const auto * rewardable = dynamic_cast<const CRewardableObject *>(object);
+						if(!rewardable)
+						{
+							logGlobal->warn("AHDBG SHRINE_REJECT hero=%s object=%s coord=%s reason=not_rewardable",
+								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString());
+							continue;
+						}
+						const auto available = rewardable->getAvailableRewards(hero, Rewardable::EEventType::EVENT_FIRST_VISIT);
+						if(available.empty())
+						{
+							logGlobal->info("AHDBG SHRINE_REJECT hero=%s object=%s coord=%s spell=%d spellLevel=%d reason=no_available_reward",
+								hero->getNameTextID(), object->getSubtypeName(), object->visitablePos().toString(),
+								shrineSpell ? shrineSpell->getNum() : -1, shrineSpellLevel);
+							continue;
+						}
+					}
+					else if(object->wasVisited(hero))
+					{
 						continue;
 					}
 
@@ -1054,8 +1435,11 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 						continue;
 
 					if(isMagicShrineTarget(object))
-						logGlobal->info("AHDBG LEVEL_CANDIDATE hero=%s object=%s coord=%s result=ACCEPT engineVisited=0 heroVisitorRecorded=0 turns=%d cost=%.1f",
-							hero->getNameTextID(), object->getSubtypeName(), destination.toString(), node->turns, node->cost);
+					{
+						logGlobal->info("AHDBG SHRINE_CANDIDATE hero=%s object=%s coord=%s spell=%d spellLevel=%d maxSpellLevel=%d turns=%d cost=%.1f result=ACCEPT",
+							hero->getNameTextID(), object->getSubtypeName(), destination.toString(),
+							shrineSpell ? shrineSpell->getNum() : -1, shrineSpellLevel, hero->maxSpellLevel(), node->turns, node->cost);
+					}
 
 					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
 					{
@@ -1067,6 +1451,145 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 			}
 
 	return best;
+}
+
+std::optional<int3> AutoHeroController::findSpellbookTarget(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+{
+	if(!hero || !owner.cb || hero->hasSpellbook())
+		return std::nullopt;
+
+	const auto player = owner.cb->getPlayerID();
+	const auto paths = owner.getPathsInfo(hero);
+	if(!player || !paths)
+		return std::nullopt;
+
+	const int currentGold = owner.cb->getResourceAmount(EGameResID::GOLD);
+	if(currentGold < GameConstants::SPELLBOOK_GOLD_COST)
+	{
+		logGlobal->info("AHDBG SPELLBOOK_TARGET hero=%s result=NONE reason=not_enough_gold gold=%d cost=%d",
+			hero->getNameTextID(), currentGold, GameConstants::SPELLBOOK_GOLD_COST);
+		return std::nullopt;
+	}
+
+	if(const auto * currentTown = hero->getVisitedTown())
+	{
+		if(currentTown->getOwner() == *player && currentTown->mageGuildLevel() > 0 && !attemptedSpellbookTowns.count(currentTown->id))
+		{
+			logGlobal->info("AHDBG SPELLBOOK_TARGET hero=%s town=%s mageGuildLevel=%d turns=0 cost=0.0 result=ACCEPT reason=current_town",
+				hero->getNameTextID(), currentTown->visitablePos().toString(), currentTown->mageGuildLevel());
+			return hero->visitablePos();
+		}
+	}
+
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> best;
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					const auto * town = dynamic_cast<const CGTownInstance *>(object);
+					if(!town || town->getOwner() != *player || town->mageGuildLevel() <= 0)
+						continue;
+					if(attemptedSpellbookTowns.count(town->id))
+						continue;
+
+					const int3 destination = town->visitablePos();
+					if(destination == hero->visitablePos() || !withinConfiguredRadius(hero, config, destination))
+						continue;
+
+					const CGPathNode * node = paths->getPathInfo(destination);
+					if(!node || !node->reachable())
+						continue;
+
+					CGPath path;
+					if(!paths->getPath(path, destination, EPathfindingLayer::AUTO) || !pathIsSafeForMvp(hero, path, destination, false))
+						continue;
+
+					logGlobal->info("AHDBG SPELLBOOK_TARGET hero=%s town=%s mageGuildLevel=%d turns=%d cost=%.1f result=ACCEPT",
+						hero->getNameTextID(), destination.toString(), town->mageGuildLevel(), node->turns, node->cost);
+
+					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
+					{
+						best = destination;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
+
+	return best;
+}
+
+bool AutoHeroController::requestSpellbookPurchase(const CGHeroInstance * hero, const CGTownInstance * town)
+{
+	if(!hero || !town || !owner.cb || hero->hasSpellbook())
+		return false;
+
+	const auto player = owner.cb->getPlayerID();
+	if(!player || town->getOwner() != *player || town->mageGuildLevel() <= 0)
+		return false;
+	if(hero->getVisitedTown() != town)
+	{
+		logGlobal->warn("AHDBG SPELLBOOK_REQUEST hero=%s town=%s result=SKIP reason=hero_not_registered_in_town",
+			hero->getNameTextID(), town->visitablePos().toString());
+		attemptedSpellbookTowns.insert(town->id);
+		return false;
+	}
+
+	const int currentGold = owner.cb->getResourceAmount(EGameResID::GOLD);
+	if(currentGold < GameConstants::SPELLBOOK_GOLD_COST)
+	{
+		logGlobal->info("AHDBG SPELLBOOK_REQUEST hero=%s town=%s result=SKIP reason=not_enough_gold gold=%d cost=%d",
+			hero->getNameTextID(), town->visitablePos().toString(), currentGold, GameConstants::SPELLBOOK_GOLD_COST);
+		attemptedSpellbookTowns.insert(town->id);
+		return false;
+	}
+
+	attemptedSpellbookTowns.insert(town->id);
+	spellbookKnownSpellsBefore = static_cast<int>(hero->getSpellsInSpellbook().size());
+	waitingForSpellbook = true;
+	spellbookWaitTicks = 30;
+	logGlobal->info("AHDBG SPELLBOOK_REQUEST hero=%s town=%s mageGuildLevel=%d gold=%d cost=%d knownBefore=%d status=DISPATCHED",
+		hero->getNameTextID(), town->visitablePos().toString(), town->mageGuildLevel(), currentGold,
+		GameConstants::SPELLBOOK_GOLD_COST, spellbookKnownSpellsBefore);
+	owner.cb->buyArtifact(hero, ArtifactID::SPELLBOOK);
+	return true;
+}
+
+void AutoHeroController::evaluatePendingShrineResult(const CGHeroInstance * hero)
+{
+	if(!hero || !pendingShrineObject)
+		return;
+
+	const int knownAfter = static_cast<int>(hero->getSpellsInSpellbook().size());
+	const bool learnedExpectedSpell = pendingShrineSpell && hero->spellbookContainsSpell(*pendingShrineSpell);
+	const bool gainedAnySpell = knownAfter > pendingShrineKnownSpellsBefore;
+	const bool success = learnedExpectedSpell || gainedAnySpell;
+
+	logGlobal->info("AHDBG SHRINE_VISIT_RESULT hero=%s objectId=%d spell=%d knownBefore=%d knownAfter=%d result=%s",
+		hero->getNameTextID(), pendingShrineObject->getNum(), pendingShrineSpell ? pendingShrineSpell->getNum() : -1,
+		pendingShrineKnownSpellsBefore, knownAfter, success ? "SUCCESS" : "NO_GAIN");
+
+	if(!success)
+	{
+		attemptedShrines.insert(*pendingShrineObject);
+		++diagnosticsAnomalies;
+		logGlobal->warn("AHDBG ANOMALY type=shrine_no_gain hero=%s objectId=%d spell=%d",
+			hero->getNameTextID(), pendingShrineObject->getNum(), pendingShrineSpell ? pendingShrineSpell->getNum() : -1);
+	}
+
+	pendingShrineObject.reset();
+	pendingShrineSpell.reset();
+	pendingShrineKnownSpellsBefore = 0;
 }
 
 bool AutoHeroController::dwellingHasUsefulRecruit(const CGDwelling * dwelling, const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
@@ -1313,7 +1836,7 @@ int AutoHeroController::mergeDuplicateArmyStacks(const CGHeroInstance * hero)
 		++diagnosticsMergeRequests;
 		logGlobal->info("AHDBG MERGE_REQUEST hero=%s creature=%d immediateReturn=%d status=DISPATCHED",
 			hero->getNameTextID(), creature.getNum(), immediateResult);
-		logGlobal->info("AutoHeroes v1.6.3: duplicate army stack merge requested hero=%s creature=%d",
+		logGlobal->info("AutoHeroes v1.7: duplicate army stack merge requested hero=%s creature=%d",
 			hero->getNameTextID(), creature.getNum());
 	}
 
@@ -1332,7 +1855,7 @@ void AutoHeroController::recruitAfterTownUpgrades(const CGHeroInstance * hero)
 	{
 		diagnosticsRecruitAmount += recruited;
 		logGlobal->info("AHDBG RECRUIT_BATCH hero=%s intendedAmount=%d", hero->getNameTextID(), recruited);
-		logGlobal->info("AutoHeroes v1.6.3: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
+		logGlobal->info("AutoHeroes v1.7: recruited %d creatures after town-upgrade phase for hero %s", recruited, hero->getNameTextID());
 		owner.closeAllDialogs();
 	}
 }
