@@ -55,6 +55,7 @@ class AutoHeroController
 	bool mergeAfterTownUpgrade = false;
 	bool endTurnAfterRun = false;
 	int transportSettleTicks = 0;
+	bool transportDeliveredThisHero = false;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
