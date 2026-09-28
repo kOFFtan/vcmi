@@ -1601,9 +1601,6 @@ bool AutoHeroController::startStrategicMovement(const CGHeroInstance * hero, con
 			&& paths->getPath(path, strategicTarget, EPathfindingLayer::AUTO)
 			&& pathIsSafeForMvp(hero, path, strategicTarget, false))
 		{
-			if(pathUsesTeleport(path))
-				teleportStrategicTarget = strategicTarget;
-
 			logGlobal->info("AHDBG STRATEGIC_ROUTE hero=%s reason=%s target=%s mode=direct turns=%d cost=%.1f teleport=%d",
 				hero->getNameTextID(), reason, strategicTarget.toString(), node->turns, node->cost, pathUsesTeleport(path) ? 1 : 0);
 			return startMovement(hero, strategicTarget, false);
@@ -1774,15 +1771,7 @@ std::optional<int> AutoHeroController::autoTeleportReply(const CGHeroInstance * 
 		return std::nullopt;
 
 	if(!teleportStrategicTarget)
-	{
-		if(exits.size() == 1)
-		{
-			logGlobal->info("AHDBG TELEPORT_REPLY hero=%s option=0 exits=1 reason=single_exit",
-				hero->getNameTextID());
-			return 0;
-		}
 		return std::nullopt;
-	}
 
 	int bestIndex = -1;
 	int bestDistance = std::numeric_limits<int>::max();
@@ -2216,7 +2205,6 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 
 	if(pathUsesTeleport(path))
 	{
-		teleportStrategicTarget = destination;
 		logGlobal->info("AHDBG PATH_TELEPORT hero=%s action=%s from=%s target=%s nodes=%d",
 			hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
 			hero->visitablePos().toString(), destination.toString(), static_cast<int>(path.nodes.size()));
