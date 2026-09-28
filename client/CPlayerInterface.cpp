@@ -1388,7 +1388,7 @@ void CPlayerInterface::showTeleportDialog(const CGHeroInstance * hero, TeleportC
 		{
 			logGlobal->info("AHDBG TELEPORT_DIALOG_AUTO hero=%s channel=%d option=%d exits=%d",
 				hero ? hero->getNameTextID() : "<none>", channel.getNum(), *reply, static_cast<int>(exits.size()));
-			cb->selectionMade(*reply, askID);
+			movementController->answerTeleportDialogAutomatically(*reply, askID);
 			return;
 		}
 	}
