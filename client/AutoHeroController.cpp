@@ -18,6 +18,7 @@
 #include "../lib/mapObjects/CGCreature.h"
 #include "../lib/mapObjects/Quest.h"
 #include "../lib/mapObjects/MiscObjects.h"
+#include "../lib/mapObjects/IObjectInterface.h"
 #include "../lib/mapObjects/CGObjectInstance.h"
 #include "../lib/mapObjects/CGDwelling.h"
 #include "../lib/mapObjects/CGTownInstance.h"
@@ -640,6 +641,8 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = endTurnWhenFinished;
 	transportSettleTicks = 0;
+	shipyardSettleTicks = 0;
+	pendingShipyardObject.reset();
 	transportTownPrep = false;
 	pendingTransportDelivery = false;
 	transportCarrierUnitsBefore = 0;
@@ -706,6 +709,8 @@ void AutoHeroController::cancel()
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	transportSettleTicks = 0;
+	shipyardSettleTicks = 0;
+	pendingShipyardObject.reset();
 	transportTownPrep = false;
 	pendingTransportDelivery = false;
 	transportCarrierUnitsBefore = 0;
@@ -761,6 +766,29 @@ void AutoHeroController::update()
 			const auto * hero = activeHero();
 			logGlobal->info("AHDBG QUERY_BARRIER state=SETTLED hero=%s action=%s",
 				hero ? hero->getNameTextID() : "<none>", activeAction ? actionName(*activeAction) : "none");
+		}
+		return;
+	}
+
+	if(shipyardSettleTicks > 0)
+	{
+		--shipyardSettleTicks;
+		if(shipyardSettleTicks == 0)
+		{
+			int status = -1;
+			if(pendingShipyardObject && owner.cb)
+			{
+				if(const auto * object = owner.cb->getObj(*pendingShipyardObject, false))
+					if(const auto * shipyard = dynamic_cast<const IShipyard *>(object))
+						status = static_cast<int>(shipyard->shipyardStatus());
+			}
+
+			logGlobal->info("AHDBG SHIPYARD_SETTLED hero=%s objectId=%d status=%d",
+				activeHero() ? activeHero()->getNameTextID() : "<none>",
+				pendingShipyardObject ? pendingShipyardObject->getNum() : -1, status);
+			pendingShipyardObject.reset();
+			owner.invalidatePaths();
+			process();
 		}
 		return;
 	}
@@ -1061,6 +1089,8 @@ void AutoHeroController::finishRun()
 	mergeAfterTownUpgrade = false;
 	endTurnAfterRun = false;
 	transportSettleTicks = 0;
+	shipyardSettleTicks = 0;
+	pendingShipyardObject.reset();
 	transportTownPrep = false;
 	pendingTransportDelivery = false;
 	transportCarrierUnitsBefore = 0;
@@ -1133,6 +1163,8 @@ void AutoHeroController::advanceHero()
 	shrineVerifyTicks = 0;
 	encounterGraceTicks = 0;
 	transportSettleTicks = 0;
+	shipyardSettleTicks = 0;
+	pendingShipyardObject.reset();
 	transportTownPrep = false;
 	pendingTransportDelivery = false;
 	transportCarrierUnitsBefore = 0;
@@ -1149,7 +1181,7 @@ void AutoHeroController::advanceHero()
 
 void AutoHeroController::process()
 {
-	if(!running || waitingForMovement || waitingForBattle || waitingForSpellbook || transportSettleTicks > 0 || pendingQueryReplies > 0 || querySettleTicks > 0 || battleCleanupTicks > 0 || waitingForTownUpgrade)
+	if(!running || waitingForMovement || waitingForBattle || waitingForSpellbook || transportSettleTicks > 0 || shipyardSettleTicks > 0 || pendingQueryReplies > 0 || querySettleTicks > 0 || battleCleanupTicks > 0 || waitingForTownUpgrade)
 		return;
 
 	if(!owner.makingTurn)
@@ -1763,6 +1795,51 @@ bool AutoHeroController::startTransporterAction(const CGHeroInstance * hero, con
 	logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s recipient=%s reason=no_safe_route_or_gateway target=%s",
 		hero->getNameTextID(), recipient->getNameTextID(), destination.toString());
 	return false;
+}
+
+bool AutoHeroController::handleShipyardInteraction(const IShipyard * shipyard)
+{
+	if(!running || !shipyard || !owner.cb)
+		return false;
+
+	const auto * hero = activeHero();
+	if(!hero)
+		return false;
+
+	TResources cost;
+	shipyard->getBoatCost(cost);
+	const auto funds = owner.cb->getResourceAmount();
+	const auto state = shipyard->shipyardStatus();
+	const bool affordable = funds.canAfford(cost);
+	const auto * object = dynamic_cast<const CGObjectInstance *>(shipyard);
+	if(object)
+		pendingShipyardObject = object->id;
+	else
+		pendingShipyardObject.reset();
+
+	logGlobal->info("AHDBG SHIPYARD_INTERACTION hero=%s objectId=%d state=%d affordable=%d cost=%s funds=%s action=%s",
+		hero->getNameTextID(), object ? object->id.getNum() : -1, static_cast<int>(state), affordable ? 1 : 0,
+		cost.toString(), funds.toString(), activeAction ? actionName(*activeAction) : "none");
+
+	if(state == IBoatGenerator::GOOD && affordable)
+	{
+		owner.cb->buildBoat(shipyard);
+		shipyardSettleTicks = 24;
+		logGlobal->info("AHDBG SHIPYARD_BUILD hero=%s objectId=%d status=DISPATCHED settle=%d",
+			hero->getNameTextID(), object ? object->id.getNum() : -1, shipyardSettleTicks);
+	}
+	else
+	{
+		shipyardSettleTicks = 8;
+		logGlobal->info("AHDBG SHIPYARD_BUILD hero=%s objectId=%d status=SKIP reason=%s settle=%d",
+			hero->getNameTextID(), object ? object->id.getNum() : -1,
+			state != IBoatGenerator::GOOD ? "shipyard_unavailable" : "insufficient_resources", shipyardSettleTicks);
+	}
+
+	// During AutoHeroes a shipyard must never leave an interactive GUI window
+	// open while the hero continues moving. We consume the interaction here
+	// and resume only after authoritative state has settled.
+	return true;
 }
 
 std::optional<int> AutoHeroController::autoTeleportReply(const CGHeroInstance * hero, const std::vector<std::pair<ObjectInstanceID, int3>> & exits)
