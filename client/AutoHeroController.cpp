@@ -121,6 +121,12 @@ int localTileDistance(const int3 & from, const int3 & to)
 	return std::max(std::abs(from.x - to.x), std::abs(from.y - to.y));
 }
 
+int strategicDistanceScore(const int3 & from, const int3 & to)
+{
+	const int layerPenalty = std::abs(from.z - to.z) * 100000;
+	return layerPenalty + std::max(std::abs(from.x - to.x), std::abs(from.y - to.y));
+}
+
 std::optional<SpellID> magicShrineSpell(const CGObjectInstance * target)
 {
 	const auto * shrine = dynamic_cast<const CRewardableObject *>(target);
@@ -639,6 +645,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	teleportStrategicTarget.reset();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
 	stepsForCurrentHero = 0;
@@ -704,6 +711,7 @@ void AutoHeroController::cancel()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	teleportStrategicTarget.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -956,7 +964,7 @@ void AutoHeroController::onHeroMovementFinished(const CGHeroInstance * hero)
 
 		++diagnosticsAnomalies;
 		logGlobal->warn("AHDBG ANOMALY type=no_movement_progress hero=%s action=%s", hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none");
-		logGlobal->warn("AutoHeroes v1.8.1: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
+		logGlobal->warn("AutoHeroes v1.8.2: hero %s did not make progress; skipping it to avoid a loop", hero->getNameTextID());
 		advanceHero();
 		encounterGraceTicks = 24;
 		return;
@@ -1058,6 +1066,7 @@ void AutoHeroController::finishRun()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	teleportStrategicTarget.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -1129,6 +1138,7 @@ void AutoHeroController::advanceHero()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	teleportStrategicTarget.reset();
 	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
 	townUpgradeDelayTicks = 0;
@@ -1217,7 +1227,7 @@ void AutoHeroController::process()
 		if(startNextAction(hero))
 			return;
 
-		logGlobal->info("AutoHeroes v1.8.1: no configured target found for hero %s", hero->getNameTextID());
+		logGlobal->info("AutoHeroes v1.8.2: no configured target found for hero %s", hero->getNameTextID());
 		advanceHero();
 		encounterGraceTicks = 24;
 		return;
@@ -1412,27 +1422,32 @@ bool AutoHeroController::loadTransporterAtCurrentTown(const CGHeroInstance * her
 		return false;
 	}
 
-	logGlobal->info("AHDBG TRANSPORT_LOAD hero=%s town=%s intendedAmount=0 cargo=0 result=WAIT_FOR_RECRUITS",
+	setTransporterNeedsSource(hero, false);
+	logGlobal->info("AHDBG TRANSPORT_LOAD hero=%s town=%s intendedAmount=0 cargo=0 result=IDLE_WAIT_FOR_RECRUITS",
 		hero->getNameTextID(), town->visitablePos().toString());
 	return false;
 }
 
-std::optional<int3> AutoHeroController::findTransportSourceTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const
+std::optional<int3> AutoHeroController::findTransportSourceTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config, bool requireUseful) const
 {
 	if(!hero || !owner.cb || config.transporterSourceTowns.empty())
 		return std::nullopt;
 
 	const auto player = owner.cb->getPlayerID();
 	const auto paths = owner.getPathsInfo(hero);
-	if(!player || !paths)
+	if(!player)
 		return std::nullopt;
 
-	std::optional<int3> bestUseful;
+	std::optional<int3> bestReachableUseful;
 	int bestUsefulTurns = std::numeric_limits<int>::max();
 	float bestUsefulCost = std::numeric_limits<float>::max();
-	std::optional<int3> bestFallback;
+	std::optional<int3> bestReachableFallback;
 	int bestFallbackTurns = std::numeric_limits<int>::max();
 	float bestFallbackCost = std::numeric_limits<float>::max();
+	std::optional<int3> bestStrategicUseful;
+	int bestStrategicUsefulDistance = std::numeric_limits<int>::max();
+	std::optional<int3> bestStrategicFallback;
+	int bestStrategicFallbackDistance = std::numeric_limits<int>::max();
 
 	for(const auto & townId : config.transporterSourceTowns)
 	{
@@ -1441,7 +1456,21 @@ std::optional<int3> AutoHeroController::findTransportSourceTown(const CGHeroInst
 			continue;
 
 		const int3 destination = town->visitablePos();
-		if(destination == hero->visitablePos())
+		const bool useful = !townRecruitLocked(hero, town) && dwellingHasUsefulRecruit(town, hero, config);
+		const int strategicDistance = strategicDistanceScore(hero->visitablePos(), destination);
+
+		if(useful && strategicDistance < bestStrategicUsefulDistance)
+		{
+			bestStrategicUseful = destination;
+			bestStrategicUsefulDistance = strategicDistance;
+		}
+		if(strategicDistance < bestStrategicFallbackDistance)
+		{
+			bestStrategicFallback = destination;
+			bestStrategicFallbackDistance = strategicDistance;
+		}
+
+		if(destination == hero->visitablePos() || !paths)
 			continue;
 
 		const CGPathNode * node = paths->getPathInfo(destination);
@@ -1453,26 +1482,157 @@ std::optional<int3> AutoHeroController::findTransportSourceTown(const CGHeroInst
 			|| !pathIsSafeForMvp(hero, path, destination, false))
 			continue;
 
-		const bool useful = !townRecruitLocked(hero, town) && dwellingHasUsefulRecruit(town, hero, config);
-		logGlobal->info("AHDBG TRANSPORT_SOURCE_CANDIDATE hero=%s town=%s useful=%d turns=%d cost=%.1f",
-			hero->getNameTextID(), destination.toString(), useful ? 1 : 0, node->turns, node->cost);
+		logGlobal->info("AHDBG TRANSPORT_SOURCE_CANDIDATE hero=%s town=%s useful=%d turns=%d cost=%.1f teleport=%d",
+			hero->getNameTextID(), destination.toString(), useful ? 1 : 0, node->turns, node->cost, pathUsesTeleport(path) ? 1 : 0);
 
 		if(useful && (node->turns < bestUsefulTurns || (node->turns == bestUsefulTurns && node->cost < bestUsefulCost)))
 		{
-			bestUseful = destination;
+			bestReachableUseful = destination;
 			bestUsefulTurns = node->turns;
 			bestUsefulCost = node->cost;
 		}
 
 		if(node->turns < bestFallbackTurns || (node->turns == bestFallbackTurns && node->cost < bestFallbackCost))
 		{
-			bestFallback = destination;
+			bestReachableFallback = destination;
 			bestFallbackTurns = node->turns;
 			bestFallbackCost = node->cost;
 		}
 	}
 
-	return bestUseful ? bestUseful : bestFallback;
+	if(requireUseful)
+		return bestReachableUseful ? bestReachableUseful : bestStrategicUseful;
+
+	if(bestReachableUseful)
+		return bestReachableUseful;
+	if(bestReachableFallback)
+		return bestReachableFallback;
+	if(bestStrategicUseful)
+		return bestStrategicUseful;
+	return bestStrategicFallback;
+}
+
+std::optional<int3> AutoHeroController::findTeleportGatewayToward(const CGHeroInstance * hero, const int3 & strategicTarget) const
+{
+	if(!hero || !owner.cb)
+		return std::nullopt;
+
+	const auto paths = owner.getPathsInfo(hero);
+	if(!paths)
+		return std::nullopt;
+
+	const int3 mapSize = owner.cb->getMapSize();
+	std::optional<int3> bestGateway;
+	int bestExitDistance = std::numeric_limits<int>::max();
+	int bestTurns = std::numeric_limits<int>::max();
+	float bestCost = std::numeric_limits<float>::max();
+
+	for(int z = 0; z < mapSize.z; ++z)
+		for(int x = 0; x < mapSize.x; ++x)
+			for(int y = 0; y < mapSize.y; ++y)
+			{
+				const int3 tile(x, y, z);
+				if(!owner.cb->isVisible(tile))
+					continue;
+
+				for(const auto * object : owner.cb->getVisitableObjs(tile))
+				{
+					const auto * teleport = dynamic_cast<const CGTeleport *>(object);
+					if(!teleport || !teleport->isEntrance() || dynamic_cast<const CGWhirlpool *>(teleport))
+						continue;
+					if(attemptedPortalEntrances.count(teleport->id))
+						continue;
+
+					const int3 gateway = teleport->visitablePos();
+					if(gateway == hero->visitablePos())
+						continue;
+
+					const CGPathNode * node = paths->getPathInfo(gateway);
+					if(!node || !node->reachable())
+						continue;
+
+					CGPath path;
+					if(!paths->getPath(path, gateway, EPathfindingLayer::AUTO)
+						|| !pathIsSafeForMvp(hero, path, gateway, false))
+						continue;
+
+					int exitDistance = std::numeric_limits<int>::max();
+					int exitCount = 0;
+					for(const auto & exitId : teleport->getAllExits(true))
+					{
+						const auto * exitObject = owner.cb->getObj(exitId, false);
+						if(!exitObject)
+							continue;
+						++exitCount;
+						exitDistance = std::min(exitDistance, strategicDistanceScore(exitObject->visitablePos(), strategicTarget));
+					}
+					if(exitCount == 0)
+						continue;
+
+					logGlobal->info("AHDBG TELEPORT_GATEWAY_CANDIDATE hero=%s entrance=%s target=%s exits=%d exitDistance=%d turns=%d cost=%.1f",
+						hero->getNameTextID(), gateway.toString(), strategicTarget.toString(), exitCount, exitDistance, node->turns, node->cost);
+
+					if(exitDistance < bestExitDistance
+						|| (exitDistance == bestExitDistance && node->turns < bestTurns)
+						|| (exitDistance == bestExitDistance && node->turns == bestTurns && node->cost < bestCost))
+					{
+						bestGateway = gateway;
+						bestExitDistance = exitDistance;
+						bestTurns = node->turns;
+						bestCost = node->cost;
+					}
+				}
+			}
+
+	return bestGateway;
+}
+
+bool AutoHeroController::startStrategicMovement(const CGHeroInstance * hero, const int3 & strategicTarget, const char * reason)
+{
+	if(!hero || !owner.cb)
+		return false;
+
+	const auto paths = owner.getPathsInfo(hero);
+	if(paths)
+	{
+		const CGPathNode * node = paths->getPathInfo(strategicTarget);
+		CGPath path;
+		if(node && node->reachable()
+			&& paths->getPath(path, strategicTarget, EPathfindingLayer::AUTO)
+			&& pathIsSafeForMvp(hero, path, strategicTarget, false))
+		{
+			if(pathUsesTeleport(path))
+				teleportStrategicTarget = strategicTarget;
+
+			logGlobal->info("AHDBG STRATEGIC_ROUTE hero=%s reason=%s target=%s mode=direct turns=%d cost=%.1f teleport=%d",
+				hero->getNameTextID(), reason, strategicTarget.toString(), node->turns, node->cost, pathUsesTeleport(path) ? 1 : 0);
+			return startMovement(hero, strategicTarget, false);
+		}
+	}
+
+	const auto gateway = findTeleportGatewayToward(hero, strategicTarget);
+	if(!gateway)
+		return false;
+
+	for(const auto * object : owner.cb->getVisitableObjs(*gateway))
+	{
+		const auto * teleport = dynamic_cast<const CGTeleport *>(object);
+		if(!teleport || !teleport->isEntrance())
+			continue;
+		attemptedPortalEntrances.insert(teleport->id);
+		for(const auto & exitId : teleport->getAllExits(true))
+			attemptedPortalEntrances.insert(exitId);
+		break;
+	}
+
+	teleportStrategicTarget = strategicTarget;
+	logGlobal->info("AHDBG STRATEGIC_ROUTE hero=%s reason=%s target=%s mode=teleport_gateway gateway=%s",
+		hero->getNameTextID(), reason, strategicTarget.toString(), gateway->toString());
+	if(startMovement(hero, *gateway, false))
+		return true;
+
+	teleportStrategicTarget.reset();
+	return false;
 }
 
 bool AutoHeroController::startTransporterAction(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config)
@@ -1537,23 +1697,48 @@ bool AutoHeroController::startTransporterAction(const CGHeroInstance * hero, con
 			return false;
 		}
 
-		const auto source = findTransportSourceTown(hero, config);
+		const auto source = findTransportSourceTown(hero, config, false);
 		if(!source)
 		{
-			logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=no_source_route", hero->getNameTextID());
+			logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=no_source_target", hero->getNameTextID());
 			return false;
 		}
 
 		activeAction.reset();
 		logGlobal->info("AHDBG TRANSPORT_TO_SOURCE hero=%s target=%s phase=SOURCE",
 			hero->getNameTextID(), source->toString());
-		return startMovement(hero, *source, false);
+		if(startStrategicMovement(hero, *source, "transport_source"))
+			return true;
+
+		logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=no_source_route target=%s",
+			hero->getNameTextID(), source->toString());
+		return false;
 	}
 
 	if(!transporterHasCargo(hero))
 	{
-		setTransporterNeedsSource(hero, true);
-		logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s reason=no_cargo_after_source", hero->getNameTextID());
+		const auto * currentTown = hero->getVisitedTown();
+		if(currentTown && config.transporterSourceTowns.contains(currentTown->id)
+			&& !townRecruitLocked(hero, currentTown) && dwellingHasUsefulRecruit(currentTown, hero, config))
+		{
+			setTransporterNeedsSource(hero, true);
+			const auto refreshed = AutoHeroes::readHeroConfig(hero->id);
+			return startTransporterAction(hero, refreshed);
+		}
+
+		const auto restock = findTransportSourceTown(hero, config, true);
+		if(restock)
+		{
+			setTransporterNeedsSource(hero, true);
+			activeAction.reset();
+			logGlobal->info("AHDBG TRANSPORT_RESTOCK hero=%s source=%s reason=stock_available",
+				hero->getNameTextID(), restock->toString());
+			if(startStrategicMovement(hero, *restock, "transport_restock"))
+				return true;
+		}
+
+		logGlobal->info("AHDBG TRANSPORT_IDLE hero=%s reason=no_cargo_no_stock fallback=normal_actions",
+			hero->getNameTextID());
 		return false;
 	}
 
@@ -1572,26 +1757,53 @@ bool AutoHeroController::startTransporterAction(const CGHeroInstance * hero, con
 	}
 
 	const int3 destination = recipient->visitablePos();
-	const auto paths = owner.getPathsInfo(hero);
-	if(!paths)
-		return false;
+	activeAction.reset();
+	logGlobal->info("AHDBG TRANSPORT_TARGET hero=%s recipient=%s coord=%s phase=RECIPIENT",
+		hero->getNameTextID(), recipient->getNameTextID(), destination.toString());
+	if(startStrategicMovement(hero, destination, "transport_recipient"))
+		return true;
 
-	const CGPathNode * node = paths->getPathInfo(destination);
-	CGPath path;
-	if(!node || !node->reachable()
-		|| !paths->getPath(path, destination, EPathfindingLayer::AUTO)
-		|| !pathIsSafeForMvp(hero, path, destination, false))
+	logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s recipient=%s reason=no_safe_route_or_gateway target=%s",
+		hero->getNameTextID(), recipient->getNameTextID(), destination.toString());
+	return false;
+}
+
+std::optional<int> AutoHeroController::autoTeleportReply(const CGHeroInstance * hero, const std::vector<std::pair<ObjectInstanceID, int3>> & exits)
+{
+	if(!running || !hero || activeHero() != hero || exits.empty())
+		return std::nullopt;
+
+	if(!teleportStrategicTarget)
 	{
-		logGlobal->info("AHDBG TRANSPORT_WAIT hero=%s recipient=%s reason=no_safe_route",
-			hero->getNameTextID(), recipient->getNameTextID());
-		return false;
+		if(exits.size() == 1)
+		{
+			logGlobal->info("AHDBG TELEPORT_REPLY hero=%s option=0 exits=1 reason=single_exit",
+				hero->getNameTextID());
+			return 0;
+		}
+		return std::nullopt;
 	}
 
-	activeAction.reset();
-	logGlobal->info("AHDBG TRANSPORT_TARGET hero=%s recipient=%s coord=%s turns=%d cost=%.1f teleport=%d phase=RECIPIENT",
-		hero->getNameTextID(), recipient->getNameTextID(), destination.toString(), node->turns, node->cost,
-		pathUsesTeleport(path) ? 1 : 0);
-	return startMovement(hero, destination, false);
+	int bestIndex = -1;
+	int bestDistance = std::numeric_limits<int>::max();
+	for(size_t i = 0; i < exits.size(); ++i)
+	{
+		const int distance = strategicDistanceScore(exits[i].second, *teleportStrategicTarget);
+		if(distance < bestDistance)
+		{
+			bestIndex = static_cast<int>(i);
+			bestDistance = distance;
+		}
+	}
+
+	if(bestIndex < 0)
+		return std::nullopt;
+
+	logGlobal->info("AHDBG TELEPORT_REPLY hero=%s option=%d exits=%d target=%s exit=%s distance=%d reason=strategic_target",
+		hero->getNameTextID(), bestIndex, static_cast<int>(exits.size()), teleportStrategicTarget->toString(),
+		exits[bestIndex].second.toString(), bestDistance);
+	teleportStrategicTarget.reset();
+	return bestIndex;
 }
 
 bool AutoHeroController::handleTransportHeroExchange(ObjectInstanceID hero1, ObjectInstanceID hero2, QueryID query)
@@ -1631,9 +1843,16 @@ bool AutoHeroController::handleTransportHeroExchange(ObjectInstanceID hero1, Obj
 
 bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 {
-	const AutoHeroes::HeroConfig config = AutoHeroes::readHeroConfig(hero->id);
+	AutoHeroes::HeroConfig config = AutoHeroes::readHeroConfig(hero->id);
 	if(config.transporterMode)
-		return startTransporterAction(hero, config);
+	{
+		if(startTransporterAction(hero, config))
+			return true;
+
+		logGlobal->info("AHDBG TRANSPORT_IDLE_FALLBACK hero=%s fallback=normal_actions",
+			hero->getNameTextID());
+		config.transporterMode = false;
+	}
 
 	const auto paths = owner.getPathsInfo(hero);
 	const bool splitRoles = hasMultipleAutoHeroes();
@@ -1996,9 +2215,12 @@ bool AutoHeroController::startMovement(const CGHeroInstance * hero, const int3 &
 		return false;
 
 	if(pathUsesTeleport(path))
+	{
+		teleportStrategicTarget = destination;
 		logGlobal->info("AHDBG PATH_TELEPORT hero=%s action=%s from=%s target=%s nodes=%d",
 			hero->getNameTextID(), activeAction ? actionName(*activeAction) : "none",
 			hero->visitablePos().toString(), destination.toString(), static_cast<int>(path.nodes.size()));
+	}
 
 	const CGPathNode * destinationNode = paths->getPathInfo(destination);
 	const int destinationTurns = destinationNode ? destinationNode->turns : -1;
