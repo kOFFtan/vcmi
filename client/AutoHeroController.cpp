@@ -1832,6 +1832,7 @@ bool AutoHeroController::handleTransportHeroExchange(ObjectInstanceID hero1, Obj
 
 bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 {
+	teleportStrategicTarget.reset();
 	AutoHeroes::HeroConfig config = AutoHeroes::readHeroConfig(hero->id);
 	if(config.transporterMode)
 	{
@@ -1841,6 +1842,14 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		logGlobal->info("AHDBG TRANSPORT_IDLE_FALLBACK hero=%s fallback=normal_actions",
 			hero->getNameTextID());
 		config.transporterMode = false;
+		if(config.actions.empty())
+		{
+			config.actions.insert(AutoHeroes::Action::COLLECT_RESOURCES);
+			config.actions.insert(AutoHeroes::Action::LEVEL_UP);
+			config.actions.insert(AutoHeroes::Action::EXPLORE);
+			logGlobal->info("AHDBG TRANSPORT_IDLE_DEFAULTS hero=%s actions=collect,level,explore",
+				hero->getNameTextID());
+		}
 	}
 
 	const auto paths = owner.getPathsInfo(hero);
