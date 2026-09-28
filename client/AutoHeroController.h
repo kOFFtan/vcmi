@@ -19,6 +19,7 @@ class CPlayerInterface;
 class CGHeroInstance;
 class CGDwelling;
 class CGTownInstance;
+class IShipyard;
 struct CGPath;
 
 namespace AutoHeroes
@@ -56,6 +57,8 @@ class AutoHeroController
 	bool mergeAfterTownUpgrade = false;
 	bool endTurnAfterRun = false;
 	int transportSettleTicks = 0;
+	int shipyardSettleTicks = 0;
+	std::optional<ObjectInstanceID> pendingShipyardObject;
 	bool transportTownPrep = false;
 	bool pendingTransportDelivery = false;
 	int64_t transportCarrierUnitsBefore = 0;
@@ -170,6 +173,7 @@ public:
 	std::optional<int> autoCreatureEncounterReply() const;
 	bool shouldAutoAcceptBorderGuard() const;
 	bool handleTransportHeroExchange(ObjectInstanceID hero1, ObjectInstanceID hero2, QueryID query);
+	bool handleShipyardInteraction(const IShipyard * shipyard);
 	std::optional<int> autoTeleportReply(const CGHeroInstance * hero, const std::vector<std::pair<ObjectInstanceID, int3>> & exits);
 	bool isRunning() const { return running; }
 	AutoHeroes::DecisionPolicy decisionPolicy() const;
