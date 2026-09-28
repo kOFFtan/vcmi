@@ -65,6 +65,7 @@ public:
 	void onPlayerTurnStarted();
 	void onBattleStarted();
 	void showTeleportDialog(const CGHeroInstance * hero, TeleportChannelID channel, TTeleportExitsList exits, bool impassable, QueryID askID);
+	void answerTeleportDialogAutomatically(int option, QueryID askID);
 	void onTryMoveHero(const CGHeroInstance * hero, const TryMoveHero & details);
 
 	// UI handlers

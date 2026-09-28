@@ -1378,6 +1378,21 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 void CPlayerInterface::showTeleportDialog(const CGHeroInstance * hero, TeleportChannelID channel, TTeleportExitsList exits, bool impassable, QueryID askID)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->isRunning() && askID >= 0)
+		autoHeroController->onQueryOpened();
+
+	if(!impassable && autoHeroController && autoHeroController->isRunning())
+	{
+		if(const auto reply = autoHeroController->autoTeleportReply(hero, exits))
+		{
+			logGlobal->info("AHDBG TELEPORT_DIALOG_AUTO hero=%s option=%d exits=%d",
+				hero ? hero->getNameTextID() : "<none>", *reply, static_cast<int>(exits.size()));
+			movementController->answerTeleportDialogAutomatically(*reply, askID);
+			return;
+		}
+	}
+
 	movementController->showTeleportDialog(hero, channel, exits, impassable, askID);
 }
 
