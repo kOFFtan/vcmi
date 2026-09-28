@@ -1819,6 +1819,10 @@ void CPlayerInterface::waitWhileDialog()
 void CPlayerInterface::showShipyardDialog(const IShipyard *obj)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->handleShipyardInteraction(obj))
+		return;
+
 	auto state = obj->shipyardStatus();
 	TResources cost;
 	obj->getBoatCost(cost);
