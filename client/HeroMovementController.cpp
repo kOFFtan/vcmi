@@ -66,6 +66,13 @@ void HeroMovementController::onBattleStarted()
 	requestMovementAbort();
 }
 
+void HeroMovementController::answerTeleportDialogAutomatically(int option, QueryID askID)
+{
+	assert(waitingForQueryApplyReply == false);
+	waitingForQueryApplyReply = true;
+	GAME->interface()->cb->selectionMade(option, askID);
+}
+
 void HeroMovementController::showTeleportDialog(const CGHeroInstance * hero, TeleportChannelID channel, TTeleportExitsList exits, bool impassable, QueryID askID)
 {
 	// let any dialog describing this teleportation (e.g. Whirlpool's stack-loss message) be
