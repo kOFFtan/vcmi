@@ -61,6 +61,7 @@ class AutoHeroController
 	int64_t transportCarrierUnitsBefore = 0;
 	int64_t transportRecipientUnitsBefore = 0;
 	std::optional<ObjectInstanceID> pendingTransportRecipient;
+	std::optional<int3> teleportStrategicTarget;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
 	std::optional<ObjectInstanceID> activeHeroId;
@@ -119,7 +120,9 @@ class AutoHeroController
 	void advanceHero();
 	bool startNextAction(const CGHeroInstance * hero);
 	bool startTransporterAction(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
-	std::optional<int3> findTransportSourceTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config) const;
+	std::optional<int3> findTransportSourceTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config, bool requireUseful = false) const;
+	std::optional<int3> findTeleportGatewayToward(const CGHeroInstance * hero, const int3 & strategicTarget) const;
+	bool startStrategicMovement(const CGHeroInstance * hero, const int3 & strategicTarget, const char * reason);
 	bool loadTransporterAtCurrentTown(const CGHeroInstance * hero, const AutoHeroes::HeroConfig & config);
 	bool transporterHasCargo(const CGHeroInstance * hero) const;
 	int64_t armyUnitCount(const CGHeroInstance * hero) const;
@@ -167,6 +170,7 @@ public:
 	std::optional<int> autoCreatureEncounterReply() const;
 	bool shouldAutoAcceptBorderGuard() const;
 	bool handleTransportHeroExchange(ObjectInstanceID hero1, ObjectInstanceID hero2, QueryID query);
+	std::optional<int> autoTeleportReply(const CGHeroInstance * hero, const std::vector<std::pair<ObjectInstanceID, int3>> & exits);
 	bool isRunning() const { return running; }
 	AutoHeroes::DecisionPolicy decisionPolicy() const;
 	AutoHeroes::TreasureChestChoice treasureChestChoice() const;
