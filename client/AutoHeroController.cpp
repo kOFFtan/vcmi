@@ -3722,7 +3722,7 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 
 bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard) const
 {
-	if(path.nodes.size() < 2)
+	if(!hero || path.nodes.size() < 2)
 		return false;
 
 	std::optional<ObjectInstanceID> allowedFriendlyHero;
