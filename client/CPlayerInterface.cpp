@@ -2045,6 +2045,14 @@ void CPlayerInterface::playerBonusChanged( const Bonus &bonus, bool gain )
 void CPlayerInterface::showPuzzleMap()
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+
+	if(autoHeroController && autoHeroController->isRunning() && autoHeroController->currentHero())
+	{
+		logGlobal->info("AHDBG PUZZLE_MAP_SUPPRESS hero=%s reason=auto_obelisk_visit",
+			autoHeroController->currentHero()->getNameTextID());
+		return;
+	}
+
 	waitWhileDialog();
 
 	//TODO: interface should not know the real position of Grail...
