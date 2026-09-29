@@ -409,6 +409,16 @@ void AutoHeroController::onBattleFinished()
 	logGlobal->info("AutoHeroes v1.7.2: battle finished; waiting for battle state cleanup before resuming");
 }
 
+void AutoHeroController::onHeroExperienceChanged(const CGHeroInstance * hero)
+{
+	if(!running || !hero || !activeHeroId || hero->id != *activeHeroId)
+		return;
+
+	experienceGraceTicks = std::max(experienceGraceTicks, 72);
+	logGlobal->info("AHDBG EXPERIENCE_GRACE_START hero=%s ticks=%d",
+		hero->getNameTextID(), experienceGraceTicks);
+}
+
 void AutoHeroController::onDialogResolved()
 {
 	if(!running)
@@ -447,39 +457,43 @@ void AutoHeroController::onQueryReplyApplied()
 		pendingQueryReplies, querySettleTicks);
 }
 
-bool AutoHeroController::shouldAutoAcceptDwellingRecruit() const
+std::optional<int> AutoHeroController::autoDwellingRecruitReply() const
 {
 	if(!running || !owner.cb)
-		return false;
+		return std::nullopt;
 
 	const auto * hero = activeHero();
-	if(!hero || !allowsAction(AutoHeroes::Action::RECRUIT_CREATURES))
-		return false;
+	if(!hero)
+		return std::nullopt;
 
 	const auto config = AutoHeroes::readHeroConfig(hero->id);
-	if(config.recruitmentLocation == AutoHeroes::RecruitmentLocation::TOWN_ONLY)
-		return false;
-
 	for(const auto * object : owner.cb->getVisitableObjs(hero->visitablePos()))
 	{
 		const auto * dwelling = dynamic_cast<const CGDwelling *>(object);
 		if(!dwelling || dynamic_cast<const CGTownInstance *>(dwelling) || dwelling->ID == Obj::WAR_MACHINE_FACTORY)
 			continue;
 
-		// A guarded hostile dwelling uses a visually similar yes/no query for combat.
-		// Never auto-confirm that query as if it were a recruitment offer.
 		if(dwelling->stacksCount() > 0)
 			continue;
 
+		if(config.recruitmentLocation == AutoHeroes::RecruitmentLocation::TOWN_ONLY
+			|| !config.allows(AutoHeroes::Action::RECRUIT_CREATURES))
+		{
+			logGlobal->info("AHDBG FIELD_RECRUIT_OFFER hero=%s object=%s objectId=%d coord=%s reply=0 reason=%s",
+				hero->getNameTextID(), dwelling->getSubtypeName(), dwelling->id.getNum(),
+				dwelling->visitablePos().toString(),
+				config.recruitmentLocation == AutoHeroes::RecruitmentLocation::TOWN_ONLY ? "town_only" : "recruit_action_disabled");
+			return 0;
+		}
+
 		const bool useful = dwellingHasUsefulRecruit(dwelling, hero, config);
-		logGlobal->info("AHDBG FIELD_RECRUIT_OFFER hero=%s object=%s objectId=%d coord=%s useful=%d",
+		logGlobal->info("AHDBG FIELD_RECRUIT_OFFER hero=%s object=%s objectId=%d coord=%s useful=%d reply=%d",
 			hero->getNameTextID(), dwelling->getSubtypeName(), dwelling->id.getNum(),
-			dwelling->visitablePos().toString(), useful ? 1 : 0);
-		if(useful)
-			return true;
+			dwelling->visitablePos().toString(), useful ? 1 : 0, useful ? 1 : 0);
+		return useful ? 1 : 0;
 	}
 
-	return false;
+	return std::nullopt;
 }
 
 std::optional<int> AutoHeroController::autoCreatureEncounterReply() const
@@ -634,6 +648,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	pendingQueryReplies = 0;
 	querySettleTicks = 0;
 	encounterGraceTicks = 0;
+	experienceGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
@@ -702,6 +717,7 @@ void AutoHeroController::cancel()
 	pendingQueryReplies = 0;
 	querySettleTicks = 0;
 	encounterGraceTicks = 0;
+	experienceGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
@@ -766,6 +782,19 @@ void AutoHeroController::update()
 			const auto * hero = activeHero();
 			logGlobal->info("AHDBG QUERY_BARRIER state=SETTLED hero=%s action=%s",
 				hero ? hero->getNameTextID() : "<none>", activeAction ? actionName(*activeAction) : "none");
+		}
+		return;
+	}
+
+	if(experienceGraceTicks > 0)
+	{
+		--experienceGraceTicks;
+		if(experienceGraceTicks == 0)
+		{
+			owner.invalidatePaths();
+			const auto * hero = activeHero();
+			logGlobal->info("AHDBG EXPERIENCE_GRACE_END hero=%s",
+				hero ? hero->getNameTextID() : "<none>");
 		}
 		return;
 	}
@@ -1082,6 +1111,7 @@ void AutoHeroController::finishRun()
 	pendingQueryReplies = 0;
 	querySettleTicks = 0;
 	encounterGraceTicks = 0;
+	experienceGraceTicks = 0;
 	battleCleanupTicks = 0;
 	battleCleanupTarget.reset();
 	waitingForTownUpgrade = false;
@@ -1162,6 +1192,7 @@ void AutoHeroController::advanceHero()
 	pendingShrineKnownSpellsBefore = 0;
 	shrineVerifyTicks = 0;
 	encounterGraceTicks = 0;
+	experienceGraceTicks = 0;
 	transportSettleTicks = 0;
 	shipyardSettleTicks = 0;
 	pendingShipyardObject.reset();
@@ -1181,7 +1212,7 @@ void AutoHeroController::advanceHero()
 
 void AutoHeroController::process()
 {
-	if(!running || waitingForMovement || waitingForBattle || waitingForSpellbook || transportSettleTicks > 0 || shipyardSettleTicks > 0 || pendingQueryReplies > 0 || querySettleTicks > 0 || battleCleanupTicks > 0 || waitingForTownUpgrade)
+	if(!running || waitingForMovement || waitingForBattle || waitingForSpellbook || transportSettleTicks > 0 || shipyardSettleTicks > 0 || experienceGraceTicks > 0 || pendingQueryReplies > 0 || querySettleTicks > 0 || battleCleanupTicks > 0 || waitingForTownUpgrade)
 		return;
 
 	if(!owner.makingTurn)
@@ -2401,10 +2432,8 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 					if(guardingCreature != int3(-1, -1, -1))
 					{
 						if(hasMultipleAutoHeroes() && !isCombatHero(hero))
-						{
-							logResourceReject("guarded_reserved_for_combat_hero");
-							continue;
-						}
+							logGlobal->info("AHDBG GUARDED_COLLECT_FALLBACK hero=%s coord=%s role=utility result=EVALUATE_SAFE_COMBAT",
+								hero->getNameTextID(), destination.toString());
 						if(config.combatPolicy == AutoHeroes::CombatPolicy::DISABLED)
 						{
 							logResourceReject("guarded_combat_disabled");
