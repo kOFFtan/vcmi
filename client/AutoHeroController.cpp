@@ -45,6 +45,7 @@ bool isMvpCollectTarget(const CGObjectInstance * target)
 	case Obj::FLOTSAM:
 	case Obj::LEAN_TO:
 	case Obj::MYSTICAL_GARDEN:
+	case Obj::OBELISK:
 	case Obj::TREASURE_CHEST:
 	case Obj::SEA_CHEST:
 	case Obj::WATER_WHEEL:
@@ -2308,7 +2309,15 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		return false;
 	}
 
-	if(startMovement(hero, destination, candidate.allowDestinationBattle, candidate.allowedBattleGuard))
+	int3 movementDestination = destination;
+	if(candidate.action == AutoHeroes::Action::COLLECT_RESOURCES && activeBattleGuard)
+	{
+		movementDestination = *activeBattleGuard;
+		logGlobal->info("AHDBG GUARDED_COLLECT_STAGE hero=%s resource=%s guard=%s stage=BATTLE_FIRST",
+			hero->getNameTextID(), destination.toString(), activeBattleGuard->toString());
+	}
+
+	if(startMovement(hero, movementDestination, candidate.allowDestinationBattle, candidate.allowedBattleGuard))
 		return true;
 
 	activeAction.reset();
@@ -2404,6 +2413,7 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 						continue;
 
 					const bool diagnoseResource = object->ID == Obj::RESOURCE || object->ID == Obj::RANDOM_RESOURCE;
+					const bool isObelisk = object->ID == Obj::OBELISK;
 					const int3 destination = object->visitablePos();
 					auto logResourceReject = [&](const char * reason)
 					{
@@ -2414,9 +2424,15 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 
 					if(object->wasVisited(hero))
 					{
+						if(isObelisk)
+							logGlobal->info("AHDBG OBELISK_REJECT hero=%s objectId=%d coord=%s reason=visited",
+								hero->getNameTextID(), object->id.getNum(), destination.toString());
 						logResourceReject("visited");
 						continue;
 					}
+					if(isObelisk)
+						logGlobal->info("AHDBG OBELISK_CANDIDATE hero=%s objectId=%d coord=%s result=EVALUATE",
+							hero->getNameTextID(), object->id.getNum(), destination.toString());
 					if(destination == hero->visitablePos())
 					{
 						logResourceReject("same_position");
@@ -2507,6 +2523,9 @@ std::optional<int3> AutoHeroController::findCollectTarget(const CGHeroInstance *
 					if(diagnoseResource)
 						logGlobal->info("AutoHeroes v1.4 collect resource candidate subtype=%s coord=%s turns=%d cost=%.1f result=ACCEPT",
 							object->getSubtypeName(), destination.toString(), node->turns, node->cost);
+					if(isObelisk)
+						logGlobal->info("AHDBG OBELISK_CANDIDATE hero=%s objectId=%d coord=%s turns=%d cost=%.1f result=ACCEPT",
+							hero->getNameTextID(), object->id.getNum(), destination.toString(), node->turns, node->cost);
 
 					best = destination;
 					bestTurns = node->turns;
