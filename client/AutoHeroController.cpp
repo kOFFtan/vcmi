@@ -161,6 +161,30 @@ int magicShrineLevel(const CGObjectInstance * target)
 	return -1;
 }
 
+bool isPermanentPrimaryStatTarget(const CGObjectInstance * target)
+{
+	if(!target)
+		return false;
+
+	switch(target->ID)
+	{
+	case Obj::GARDEN_OF_REVELATION:
+	case Obj::STAR_AXIS:
+	case Obj::MARLETTO_TOWER:
+	case Obj::MERCENARY_CAMP:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool isDirectCreatureUpgrade(const CCreature * weak, CreatureID strong)
+{
+	if(!weak)
+		return false;
+	return std::find(weak->upgrades.begin(), weak->upgrades.end(), strong) != weak->upgrades.end();
+}
+
 bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLearning)
 {
 	if(!target)
@@ -664,6 +688,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -733,6 +758,7 @@ void AutoHeroController::cancel()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
@@ -1127,6 +1153,7 @@ void AutoHeroController::finishRun()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
@@ -1202,6 +1229,7 @@ void AutoHeroController::advanceHero()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
@@ -1358,6 +1386,14 @@ bool AutoHeroController::recipientCanAcceptTransportArmy(const CGHeroInstance * 
 
 		if(recipient->getSlotFor(stack.second->getCreatureID()).validSlot())
 			return true;
+
+		for(const auto & recipientStack : recipient->Slots())
+		{
+			if(!recipientStack.second || !recipientStack.second->getCreature())
+				continue;
+			if(isDirectCreatureUpgrade(recipientStack.second->getCreature(), stack.second->getCreatureID()))
+				return true;
+		}
 	}
 	return false;
 }
@@ -1391,13 +1427,38 @@ void AutoHeroController::verifyPendingTransportDelivery()
 	const int64_t recipientAfter = armyUnitCount(recipient);
 	const int64_t movedFromCarrier = std::max<int64_t>(0, transportCarrierUnitsBefore - carrierAfter);
 	const int64_t gainedByRecipient = std::max<int64_t>(0, recipientAfter - transportRecipientUnitsBefore);
-	const bool observed = carrier && recipient && movedFromCarrier > 0 && gainedByRecipient > 0;
 
-	logGlobal->info("AHDBG TRANSPORT_VERIFY hero=%s recipient=%s carrierBefore=%lld carrierAfter=%lld recipientBefore=%lld recipientAfter=%lld moved=%lld gained=%lld result=%s",
+	bool replacementsObserved = !pendingTransportReplacementCreatures.empty();
+	if(recipient && replacementsObserved)
+	{
+		for(const auto & strongId : pendingTransportReplacementCreatures)
+		{
+			bool found = false;
+			for(const auto & stack : recipient->Slots())
+			{
+				if(stack.second && stack.second->getCreatureID() == strongId)
+				{
+					found = true;
+					break;
+				}
+			}
+			if(!found)
+			{
+				replacementsObserved = false;
+				break;
+			}
+		}
+	}
+
+	const bool observed = carrier && recipient
+		&& ((movedFromCarrier > 0 && gainedByRecipient > 0) || replacementsObserved);
+
+	logGlobal->info("AHDBG TRANSPORT_VERIFY hero=%s recipient=%s carrierBefore=%lld carrierAfter=%lld recipientBefore=%lld recipientAfter=%lld moved=%lld gained=%lld replacements=%d replacementsObserved=%d result=%s",
 		carrier ? carrier->getNameTextID() : "<none>", recipient ? recipient->getNameTextID() : "<none>",
 		static_cast<long long>(transportCarrierUnitsBefore), static_cast<long long>(carrierAfter),
 		static_cast<long long>(transportRecipientUnitsBefore), static_cast<long long>(recipientAfter),
 		static_cast<long long>(movedFromCarrier), static_cast<long long>(gainedByRecipient),
+		static_cast<int>(pendingTransportReplacementCreatures.size()), replacementsObserved ? 1 : 0,
 		observed ? "SUCCESS" : "NO_TRANSFER");
 
 	if(carrier)
@@ -1413,6 +1474,7 @@ void AutoHeroController::verifyPendingTransportDelivery()
 
 	pendingTransportDelivery = false;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 }
@@ -1429,22 +1491,62 @@ bool AutoHeroController::dispatchTransportArmy(const CGHeroInstance * carrier, c
 		return false;
 	}
 
-	const SlotID reserveSlot = transporterReserveSlot(carrier);
+	SlotID reserveSlot = transporterReserveSlot(carrier);
 	if(!reserveSlot.validSlot())
 		return false;
+
+	pendingTransportReplacementCreatures.clear();
+	std::set<SlotID> usedRecipientSlots;
+	std::optional<SlotID> replacementReserve;
+
+	for(const auto & carrierStack : carrier->Slots())
+	{
+		if(!carrierStack.second || !carrierStack.second->getCreature())
+			continue;
+
+		const CreatureID strongId = carrierStack.second->getCreatureID();
+		if(recipient->getSlotFor(strongId).validSlot())
+			continue;
+
+		for(const auto & recipientStack : recipient->Slots())
+		{
+			if(!recipientStack.second || !recipientStack.second->getCreature())
+				continue;
+			if(usedRecipientSlots.count(recipientStack.first))
+				continue;
+			if(!isDirectCreatureUpgrade(recipientStack.second->getCreature(), strongId))
+				continue;
+
+			usedRecipientSlots.insert(recipientStack.first);
+			pendingTransportReplacementCreatures.push_back(strongId);
+			if(!replacementReserve)
+				replacementReserve = carrierStack.first;
+
+			logGlobal->info("AHDBG TRANSPORT_REPLACE_WEAK hero=%s recipient=%s weakCreature=%d weakCount=%d recipientSlot=%d strongCreature=%d strongCount=%d carrierSlot=%d status=DISPATCHED",
+				carrier->getNameTextID(), recipient->getNameTextID(),
+				recipientStack.second->getCreatureID().getNum(), recipientStack.second->getCount(), recipientStack.first.getNum(),
+				strongId.getNum(), carrierStack.second->getCount(), carrierStack.first.getNum());
+
+			owner.cb->swapCreatures(recipient, carrier, recipientStack.first, carrierStack.first);
+			break;
+		}
+	}
+
+	if(replacementReserve)
+		reserveSlot = *replacementReserve;
 
 	transportCarrierUnitsBefore = armyUnitCount(carrier);
 	transportRecipientUnitsBefore = armyUnitCount(recipient);
 	pendingTransportRecipient = recipient->id;
 	pendingTransportDelivery = true;
 
-	logGlobal->info("AHDBG TRANSPORT_UNLOAD hero=%s recipient=%s unitsBefore=%lld recipientUnitsBefore=%lld reserveSlot=%d status=DISPATCHED",
+	logGlobal->info("AHDBG TRANSPORT_UNLOAD hero=%s recipient=%s unitsBefore=%lld recipientUnitsBefore=%lld reserveSlot=%d replacements=%d status=DISPATCHED",
 		carrier->getNameTextID(), recipient->getNameTextID(),
 		static_cast<long long>(transportCarrierUnitsBefore), static_cast<long long>(transportRecipientUnitsBefore),
-		reserveSlot.getNum());
+		reserveSlot.getNum(), static_cast<int>(pendingTransportReplacementCreatures.size()));
 
 	owner.cb->bulkMoveArmy(carrier->id, recipient->id, reserveSlot);
-	transportSettleTicks = 20;
+	transportSettleTicks = pendingTransportReplacementCreatures.empty() ? 20 : 28;
 	return true;
 }
 
@@ -1997,6 +2099,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		int turns = -1;
 		float cost = -1.0f;
 		int tileDistance = std::numeric_limits<int>::max();
+		int localValueRank = 1;
 	};
 
 	auto fillMetrics = [&](ActionCandidate & candidate)
@@ -2126,12 +2229,23 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		}
 
 		fillMetrics(candidate);
+		if(candidate.action == AutoHeroes::Action::LEVEL_UP && candidate.destination)
+		{
+			for(const auto * object : owner.cb->getVisitableObjs(*candidate.destination))
+			{
+				if(isPermanentPrimaryStatTarget(object) && !object->wasVisited(hero))
+				{
+					candidate.localValueRank = 0;
+					break;
+				}
+			}
+		}
 		const bool isLocal = candidate.destination && candidate.tileDistance <= LOCAL_OPPORTUNITY_RADIUS;
-		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s priorityRank=%d result=%s target=%s turns=%d cost=%.1f tileDistance=%d local=%d spellbook=%d roleMismatch=%d",
+		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s priorityRank=%d result=%s target=%s turns=%d cost=%.1f tileDistance=%d local=%d localValueRank=%d spellbook=%d roleMismatch=%d",
 			hero->getNameTextID(), actionName(action), candidate.priorityRank,
 			candidate.destination ? "TARGET" : "NONE", candidate.destination ? candidate.destination->toString() : "<none>",
 			candidate.turns, candidate.cost, candidate.destination ? candidate.tileDistance : -1, isLocal ? 1 : 0,
-			candidate.spellbook ? 1 : 0, roleMismatch ? 1 : 0);
+			candidate.localValueRank, candidate.spellbook ? 1 : 0, roleMismatch ? 1 : 0);
 
 		if(!candidate.destination)
 			continue;
@@ -2140,6 +2254,9 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		{
 			auto localScoreBetter = [](const ActionCandidate & lhs, const ActionCandidate & rhs)
 			{
+				if(lhs.localValueRank != rhs.localValueRank)
+					return lhs.localValueRank < rhs.localValueRank;
+
 				const int lhsTurns = lhs.turns >= 0 ? lhs.turns : std::numeric_limits<int>::max();
 				const int rhsTurns = rhs.turns >= 0 ? rhs.turns : std::numeric_limits<int>::max();
 				if(lhsTurns != rhsTurns)
@@ -2176,10 +2293,10 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	if(bestLocalCandidate)
 	{
 		selected = bestLocalCandidate;
-		logGlobal->info("AHDBG LOCAL_SWEEP hero=%s action=%s target=%s turns=%d cost=%.1f tileDistance=%d priorityRank=%d role=%s reason=nearest_local_useful",
+		logGlobal->info("AHDBG LOCAL_SWEEP hero=%s action=%s target=%s turns=%d cost=%.1f tileDistance=%d priorityRank=%d localValueRank=%d role=%s reason=nearest_local_useful",
 			hero->getNameTextID(), actionName(selected->action),
 			selected->destination ? selected->destination->toString() : "<none>",
-			selected->turns, selected->cost, selected->tileDistance, selected->priorityRank,
+			selected->turns, selected->cost, selected->tileDistance, selected->priorityRank, selected->localValueRank,
 			combatRole ? "combat" : "utility");
 	}
 	else
@@ -2582,6 +2699,9 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 	std::optional<int3> best;
 	int bestTurns = std::numeric_limits<int>::max();
 	float bestCost = std::numeric_limits<float>::max();
+	std::optional<int3> bestLocalPermanent;
+	int bestLocalPermanentTurns = std::numeric_limits<int>::max();
+	float bestLocalPermanentCost = std::numeric_limits<float>::max();
 
 	for(int z = 0; z < mapSize.z; ++z)
 		for(int x = 0; x < mapSize.x; ++x)
@@ -2704,6 +2824,20 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 							shrineSpell ? shrineSpell->getNum() : -1, shrineSpellLevel, hero->maxSpellLevel(), node->turns, node->cost);
 					}
 
+					if(isPermanentPrimaryStatTarget(object) && localTileDistance(hero->visitablePos(), destination) <= LOCAL_OPPORTUNITY_RADIUS)
+					{
+						logGlobal->info("AHDBG LOCAL_STAT_CANDIDATE hero=%s object=%s objectId=%d coord=%s turns=%d cost=%.1f distance=%d",
+							hero->getNameTextID(), object->getSubtypeName(), object->id.getNum(), destination.toString(),
+							node->turns, node->cost, localTileDistance(hero->visitablePos(), destination));
+						if(node->turns < bestLocalPermanentTurns
+							|| (node->turns == bestLocalPermanentTurns && node->cost < bestLocalPermanentCost))
+						{
+							bestLocalPermanent = destination;
+							bestLocalPermanentTurns = node->turns;
+							bestLocalPermanentCost = node->cost;
+						}
+					}
+
 					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
 					{
 						best = destination;
@@ -2713,6 +2847,12 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 				}
 			}
 
+	if(bestLocalPermanent)
+	{
+		logGlobal->info("AHDBG LOCAL_STAT_SELECT hero=%s coord=%s reason=permanent_primary_stat_within_radius",
+			hero->getNameTextID(), bestLocalPermanent->toString());
+		return bestLocalPermanent;
+	}
 	return best;
 }
 

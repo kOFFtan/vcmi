@@ -65,6 +65,7 @@ class AutoHeroController
 	int64_t transportCarrierUnitsBefore = 0;
 	int64_t transportRecipientUnitsBefore = 0;
 	std::optional<ObjectInstanceID> pendingTransportRecipient;
+	std::vector<CreatureID> pendingTransportReplacementCreatures;
 	std::optional<int3> teleportStrategicTarget;
 	std::vector<ObjectInstanceID> heroQueue;
 	size_t heroQueueIndex = 0;
