@@ -1877,33 +1877,54 @@ bool AutoHeroController::handleTransportHeroExchange(ObjectInstanceID hero1, Obj
 	if(!running || query < 0 || !activeHeroId)
 		return false;
 
-	const auto * carrier = activeHero();
-	if(!carrier)
+	const auto * active = activeHero();
+	if(!active)
 		return false;
 
-	const auto config = AutoHeroes::readHeroConfig(carrier->id);
-	if(!config.transporterMode || !config.transporterTargetHero)
-		return false;
-
-	const ObjectInstanceID recipientId = *config.transporterTargetHero;
-	const bool matchingPair = (hero1 == carrier->id && hero2 == recipientId) || (hero2 == carrier->id && hero1 == recipientId);
-	if(!matchingPair)
-		return false;
-
-	const auto * recipient = owner.cb->getHero(recipientId);
-	if(!recipient)
+	const bool activeInPair = hero1 == active->id || hero2 == active->id;
+	if(!activeInPair)
 		return false;
 
 	onQueryOpened();
-	const bool dispatched = dispatchTransportArmy(carrier, recipient);
-	if(!dispatched)
+
+	const auto config = AutoHeroes::readHeroConfig(active->id);
+	if(config.transporterMode && config.transporterTargetHero)
 	{
-		setTransporterNeedsSource(carrier, true);
-		transportSettleTicks = 8;
+		const ObjectInstanceID recipientId = *config.transporterTargetHero;
+		const bool matchingPair = (hero1 == active->id && hero2 == recipientId)
+			|| (hero2 == active->id && hero1 == recipientId);
+
+		if(matchingPair)
+		{
+			const auto * recipient = owner.cb->getHero(recipientId);
+			if(recipient)
+			{
+				const bool dispatched = dispatchTransportArmy(active, recipient);
+				if(!dispatched)
+				{
+					setTransporterNeedsSource(active, true);
+					transportSettleTicks = 8;
+				}
+
+				logGlobal->info("AHDBG TRANSPORT_EXCHANGE hero=%s recipient=%s query=%d dispatched=%d",
+					active->getNameTextID(), recipient->getNameTextID(), query.getNum(), dispatched ? 1 : 0);
+				owner.cb->selectionMade(0, query);
+				return true;
+			}
+		}
 	}
-	logGlobal->info("AHDBG TRANSPORT_EXCHANGE hero=%s recipient=%s query=%d dispatched=%d",
-		carrier->getNameTextID(), recipient->getNameTextID(), query.getNum(), dispatched ? 1 : 0);
+
+	const ObjectInstanceID otherId = hero1 == active->id ? hero2 : hero1;
+	const auto * other = owner.cb ? owner.cb->getHero(otherId) : nullptr;
+	logGlobal->warn("AHDBG AUTO_EXCHANGE_CLOSE hero=%s other=%s otherId=%d query=%d reason=unplanned_friendly_encounter",
+		active->getNameTextID(), other ? other->getNameTextID() : "<unknown>", otherId.getNum(), query.getNum());
+
+	// Ordinary AutoHeroes movement must never leave an interactive exchange
+	// query open. Closing it immediately prevents HeroMovementController from
+	// repeatedly retrying the next path step against an unanswered query.
 	owner.cb->selectionMade(0, query);
+	querySettleTicks = std::max(querySettleTicks, 6);
+	encounterGraceTicks = std::max(encounterGraceTicks, 24);
 	return true;
 }
 
@@ -3701,12 +3722,42 @@ std::optional<int3> AutoHeroController::findExploreTarget(const CGHeroInstance *
 
 bool AutoHeroController::pathIsSafeForMvp(const CGHeroInstance * hero, const CGPath & path, const int3 & destination, bool allowDestinationBattle, const std::optional<int3> & allowedBattleGuard) const
 {
-	if(path.nodes.size() < 2)
+	if(!hero || path.nodes.size() < 2)
 		return false;
+
+	std::optional<ObjectInstanceID> allowedFriendlyHero;
+	if(hero)
+	{
+		const auto config = AutoHeroes::readHeroConfig(hero->id);
+		if(config.transporterMode && config.transporterTargetHero)
+			allowedFriendlyHero = config.transporterTargetHero;
+	}
 
 	for(const auto & node : path.nodes)
 	{
 		const bool isDestination = node.coord == destination;
+		if(owner.cb->isVisible(node.coord))
+		{
+			for(const auto * object : owner.cb->getVisitableObjs(node.coord))
+			{
+				const auto * otherHero = dynamic_cast<const CGHeroInstance *>(object);
+				if(!otherHero || otherHero->id == hero->id || otherHero->tempOwner != hero->tempOwner)
+					continue;
+
+				const bool allowedRecipient = isDestination
+					&& allowedFriendlyHero
+					&& otherHero->id == *allowedFriendlyHero;
+
+				if(!allowedRecipient)
+				{
+					logGlobal->info("AHDBG PATH_REJECT hero=%s coord=%s reason=friendly_hero_blocker other=%s otherId=%d destination=%d",
+						hero->getNameTextID(), node.coord.toString(), otherHero->getNameTextID(),
+						otherHero->id.getNum(), isDestination ? 1 : 0);
+					return false;
+				}
+			}
+		}
+
 		const int3 guardingCreature = owner.cb->isVisible(node.coord)
 			? owner.cb->guardingCreaturePosition(node.coord)
 			: int3(-1, -1, -1);
