@@ -66,7 +66,7 @@ CAutoHeroWindow::CAutoHeroWindow(const CGHeroInstance * hero_)
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 82, 668, 202), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 	keep(std::make_shared<TransparentFilledRectangle>(Rect(16, 294, 668, 274), ColorRGBA(0, 0, 0, 54), ColorRGBA(120, 92, 48, 220), 1));
 
-	std::string title = tr("vcmi.autoHeroes.title") + " v1.8.7: " + GAME->translator().translate(hero->getNameTextID());
+	std::string title = tr("vcmi.autoHeroes.title") + " v1.8.8: " + GAME->translator().translate(hero->getNameTextID());
 	keep(std::make_shared<CLabel>(WIN_W / 2, 20, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, title, 650));
 
 	auto enabled = keep(std::make_shared<CToggleButton>(
