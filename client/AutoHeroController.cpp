@@ -161,6 +161,30 @@ int magicShrineLevel(const CGObjectInstance * target)
 	return -1;
 }
 
+bool isPermanentPrimaryStatTarget(const CGObjectInstance * target)
+{
+	if(!target)
+		return false;
+
+	switch(target->ID)
+	{
+	case Obj::GARDEN_OF_REVELATION:
+	case Obj::STAR_AXIS:
+	case Obj::MARLETTO_TOWER:
+	case Obj::MERCENARY_CAMP:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool isDirectCreatureUpgrade(const CCreature * weak, CreatureID strong)
+{
+	if(!weak)
+		return false;
+	return std::find(weak->upgrades.begin(), weak->upgrades.end(), strong) != weak->upgrades.end();
+}
+
 bool isLevelUpTarget(const CGObjectInstance * target, bool allowSecondarySkillLearning)
 {
 	if(!target)
@@ -664,6 +688,7 @@ bool AutoHeroController::start(bool endTurnWhenFinished)
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	heroQueueIndex = 0;
 	activeHeroId.reset();
@@ -733,6 +758,7 @@ void AutoHeroController::cancel()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
@@ -1127,6 +1153,7 @@ void AutoHeroController::finishRun()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	heroQueue.clear();
 	heroQueueIndex = 0;
@@ -1202,6 +1229,7 @@ void AutoHeroController::advanceHero()
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	teleportStrategicTarget.reset();
 	pendingUpgradeAudit.clear();
 	waitingForTownUpgrade = false;
@@ -1358,6 +1386,14 @@ bool AutoHeroController::recipientCanAcceptTransportArmy(const CGHeroInstance * 
 
 		if(recipient->getSlotFor(stack.second->getCreatureID()).validSlot())
 			return true;
+
+		for(const auto & recipientStack : recipient->Slots())
+		{
+			if(!recipientStack.second || !recipientStack.second->getCreature())
+				continue;
+			if(isDirectCreatureUpgrade(recipientStack.second->getCreature(), stack.second->getCreatureID()))
+				return true;
+		}
 	}
 	return false;
 }
@@ -1413,6 +1449,7 @@ void AutoHeroController::verifyPendingTransportDelivery()
 
 	pendingTransportDelivery = false;
 	pendingTransportRecipient.reset();
+	pendingTransportReplacementCreatures.clear();
 	transportCarrierUnitsBefore = 0;
 	transportRecipientUnitsBefore = 0;
 }
@@ -2582,6 +2619,9 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 	std::optional<int3> best;
 	int bestTurns = std::numeric_limits<int>::max();
 	float bestCost = std::numeric_limits<float>::max();
+	std::optional<int3> bestLocalPermanent;
+	int bestLocalPermanentTurns = std::numeric_limits<int>::max();
+	float bestLocalPermanentCost = std::numeric_limits<float>::max();
 
 	for(int z = 0; z < mapSize.z; ++z)
 		for(int x = 0; x < mapSize.x; ++x)
@@ -2704,6 +2744,20 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 							shrineSpell ? shrineSpell->getNum() : -1, shrineSpellLevel, hero->maxSpellLevel(), node->turns, node->cost);
 					}
 
+					if(isPermanentPrimaryStatTarget(object) && localTileDistance(hero->visitablePos(), destination) <= LOCAL_OPPORTUNITY_RADIUS)
+					{
+						logGlobal->info("AHDBG LOCAL_STAT_CANDIDATE hero=%s object=%s objectId=%d coord=%s turns=%d cost=%.1f distance=%d",
+							hero->getNameTextID(), object->getSubtypeName(), object->id.getNum(), destination.toString(),
+							node->turns, node->cost, localTileDistance(hero->visitablePos(), destination));
+						if(node->turns < bestLocalPermanentTurns
+							|| (node->turns == bestLocalPermanentTurns && node->cost < bestLocalPermanentCost))
+						{
+							bestLocalPermanent = destination;
+							bestLocalPermanentTurns = node->turns;
+							bestLocalPermanentCost = node->cost;
+						}
+					}
+
 					if(node->turns < bestTurns || (node->turns == bestTurns && node->cost < bestCost))
 					{
 						best = destination;
@@ -2713,6 +2767,12 @@ std::optional<int3> AutoHeroController::findLevelTarget(const CGHeroInstance * h
 				}
 			}
 
+	if(bestLocalPermanent)
+	{
+		logGlobal->info("AHDBG LOCAL_STAT_SELECT hero=%s coord=%s reason=permanent_primary_stat_within_radius",
+			hero->getNameTextID(), bestLocalPermanent->toString());
+		return bestLocalPermanent;
+	}
 	return best;
 }
 
