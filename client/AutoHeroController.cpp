@@ -233,6 +233,12 @@ bool isCaptureTarget(const CGObjectInstance * target, PlayerColor player)
 	if(!target || target->ID == Obj::HERO)
 		return false;
 
+	// Service objects do not change into a useful captured state after a visit.
+	// Treating the War Machine Factory as IOwnableObject caused AutoHeroes to
+	// revisit the same Arsenal every turn and repeatedly open its purchase dialog.
+	if(target->ID == Obj::WAR_MACHINE_FACTORY)
+		return false;
+
 	// Town recruitment is handled separately. Only a genuinely empty neutral
 	// town is an automatic capture target; guarded/enemy towns need their own
 	// danger evaluation before they can be automated safely.
