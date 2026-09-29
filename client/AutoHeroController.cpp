@@ -1427,13 +1427,38 @@ void AutoHeroController::verifyPendingTransportDelivery()
 	const int64_t recipientAfter = armyUnitCount(recipient);
 	const int64_t movedFromCarrier = std::max<int64_t>(0, transportCarrierUnitsBefore - carrierAfter);
 	const int64_t gainedByRecipient = std::max<int64_t>(0, recipientAfter - transportRecipientUnitsBefore);
-	const bool observed = carrier && recipient && movedFromCarrier > 0 && gainedByRecipient > 0;
 
-	logGlobal->info("AHDBG TRANSPORT_VERIFY hero=%s recipient=%s carrierBefore=%lld carrierAfter=%lld recipientBefore=%lld recipientAfter=%lld moved=%lld gained=%lld result=%s",
+	bool replacementsObserved = !pendingTransportReplacementCreatures.empty();
+	if(recipient && replacementsObserved)
+	{
+		for(const auto & strongId : pendingTransportReplacementCreatures)
+		{
+			bool found = false;
+			for(const auto & stack : recipient->Slots())
+			{
+				if(stack.second && stack.second->getCreatureID() == strongId)
+				{
+					found = true;
+					break;
+				}
+			}
+			if(!found)
+			{
+				replacementsObserved = false;
+				break;
+			}
+		}
+	}
+
+	const bool observed = carrier && recipient
+		&& ((movedFromCarrier > 0 && gainedByRecipient > 0) || replacementsObserved);
+
+	logGlobal->info("AHDBG TRANSPORT_VERIFY hero=%s recipient=%s carrierBefore=%lld carrierAfter=%lld recipientBefore=%lld recipientAfter=%lld moved=%lld gained=%lld replacements=%d replacementsObserved=%d result=%s",
 		carrier ? carrier->getNameTextID() : "<none>", recipient ? recipient->getNameTextID() : "<none>",
 		static_cast<long long>(transportCarrierUnitsBefore), static_cast<long long>(carrierAfter),
 		static_cast<long long>(transportRecipientUnitsBefore), static_cast<long long>(recipientAfter),
 		static_cast<long long>(movedFromCarrier), static_cast<long long>(gainedByRecipient),
+		static_cast<int>(pendingTransportReplacementCreatures.size()), replacementsObserved ? 1 : 0,
 		observed ? "SUCCESS" : "NO_TRANSFER");
 
 	if(carrier)
@@ -1466,22 +1491,62 @@ bool AutoHeroController::dispatchTransportArmy(const CGHeroInstance * carrier, c
 		return false;
 	}
 
-	const SlotID reserveSlot = transporterReserveSlot(carrier);
+	SlotID reserveSlot = transporterReserveSlot(carrier);
 	if(!reserveSlot.validSlot())
 		return false;
+
+	pendingTransportReplacementCreatures.clear();
+	std::set<SlotID> usedRecipientSlots;
+	std::optional<SlotID> replacementReserve;
+
+	for(const auto & carrierStack : carrier->Slots())
+	{
+		if(!carrierStack.second || !carrierStack.second->getCreature())
+			continue;
+
+		const CreatureID strongId = carrierStack.second->getCreatureID();
+		if(recipient->getSlotFor(strongId).validSlot())
+			continue;
+
+		for(const auto & recipientStack : recipient->Slots())
+		{
+			if(!recipientStack.second || !recipientStack.second->getCreature())
+				continue;
+			if(usedRecipientSlots.count(recipientStack.first))
+				continue;
+			if(!isDirectCreatureUpgrade(recipientStack.second->getCreature(), strongId))
+				continue;
+
+			usedRecipientSlots.insert(recipientStack.first);
+			pendingTransportReplacementCreatures.push_back(strongId);
+			if(!replacementReserve)
+				replacementReserve = carrierStack.first;
+
+			logGlobal->info("AHDBG TRANSPORT_REPLACE_WEAK hero=%s recipient=%s weakCreature=%d weakCount=%d recipientSlot=%d strongCreature=%d strongCount=%d carrierSlot=%d status=DISPATCHED",
+				carrier->getNameTextID(), recipient->getNameTextID(),
+				recipientStack.second->getCreatureID().getNum(), recipientStack.second->getCount(), recipientStack.first.getNum(),
+				strongId.getNum(), carrierStack.second->getCount(), carrierStack.first.getNum());
+
+			owner.cb->swapCreatures(recipient, carrier, recipientStack.first, carrierStack.first);
+			break;
+		}
+	}
+
+	if(replacementReserve)
+		reserveSlot = *replacementReserve;
 
 	transportCarrierUnitsBefore = armyUnitCount(carrier);
 	transportRecipientUnitsBefore = armyUnitCount(recipient);
 	pendingTransportRecipient = recipient->id;
 	pendingTransportDelivery = true;
 
-	logGlobal->info("AHDBG TRANSPORT_UNLOAD hero=%s recipient=%s unitsBefore=%lld recipientUnitsBefore=%lld reserveSlot=%d status=DISPATCHED",
+	logGlobal->info("AHDBG TRANSPORT_UNLOAD hero=%s recipient=%s unitsBefore=%lld recipientUnitsBefore=%lld reserveSlot=%d replacements=%d status=DISPATCHED",
 		carrier->getNameTextID(), recipient->getNameTextID(),
 		static_cast<long long>(transportCarrierUnitsBefore), static_cast<long long>(transportRecipientUnitsBefore),
-		reserveSlot.getNum());
+		reserveSlot.getNum(), static_cast<int>(pendingTransportReplacementCreatures.size()));
 
 	owner.cb->bulkMoveArmy(carrier->id, recipient->id, reserveSlot);
-	transportSettleTicks = 20;
+	transportSettleTicks = pendingTransportReplacementCreatures.empty() ? 20 : 28;
 	return true;
 }
 
