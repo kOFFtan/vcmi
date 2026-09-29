@@ -501,6 +501,8 @@ void CPlayerInterface::openTownWindow(const CGTownInstance * town)
 void CPlayerInterface::heroExperienceChanged(const CGHeroInstance * hero, si64 val)
 {
 	EVENT_HANDLER_CALLED_BY_CLIENT;
+	if(autoHeroController)
+		autoHeroController->onHeroExperienceChanged(hero);
 	for(auto ctw : ENGINE->windows().findWindows<IMarketHolder>())
 		ctw->updateExperience();
 }
@@ -664,6 +666,17 @@ void CPlayerInterface::heroVisitsTown(const CGHeroInstance* hero, const CGTownIn
 	EVENT_HANDLER_CALLED_BY_CLIENT;
 	if (hero->tempOwner != playerID )
 		return;
+
+	if(autoHeroController && autoHeroController->isRunning())
+	{
+		const auto * active = autoHeroController->currentHero();
+		if(active && active->id == hero->id)
+		{
+			logGlobal->info("AHDBG TOWN_UI_SUPPRESS hero=%s town=%s reason=autohero_visit",
+				hero->getNameTextID(), town ? town->visitablePos().toString() : "<none>");
+			return;
+		}
+	}
 
 	waitWhileDialog();
 	openTownWindow(town);
@@ -1278,13 +1291,14 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 	}
 
 	if(autoHeroController && autoHeroController->isRunning()
-		&& !selection && cancel
-		&& autoHeroController->shouldAutoAcceptDwellingRecruit())
+		&& !selection && cancel)
 	{
-		logGlobal->info("AHDBG DIALOG_REPLY kind=field_recruit source=auto option=1");
-		logGlobal->info("AutoHeroes v1.8: automatically accepting field dwelling recruitment offer");
-		cb->selectionMade(1, askID);
-		return;
+		if(const auto dwellingReply = autoHeroController->autoDwellingRecruitReply())
+		{
+			logGlobal->info("AHDBG DIALOG_REPLY kind=field_recruit source=auto option=%d", *dwellingReply);
+			cb->selectionMade(*dwellingReply, askID);
+			return;
+		}
 	}
 
 	if(autoHeroController && autoHeroController->isRunning() && !selection && cancel)
@@ -1715,6 +1729,19 @@ void CPlayerInterface::showRecruitmentDialog(const CGDwelling *dwelling, const C
 		autoHeroController->onQueryOpened();
 
 	const CGHeroInstance * autoHero = autoHeroController ? autoHeroController->currentHero() : nullptr;
+	if(autoHeroController && autoHeroController->isRunning() && autoHero && dst == autoHero
+		&& (!autoHeroController->allowsAction(AutoHeroes::Action::RECRUIT_CREATURES)
+			|| autoHeroController->recruitmentLocation() == AutoHeroes::RecruitmentLocation::TOWN_ONLY))
+	{
+		logGlobal->info("AHDBG FIELD_RECRUIT_WINDOW_CLOSE hero=%s reason=%s query=%d",
+			autoHero->getNameTextID(),
+			!autoHeroController->allowsAction(AutoHeroes::Action::RECRUIT_CREATURES) ? "recruit_action_disabled" : "town_only",
+			queryID.getNum());
+		if(queryID >= 0)
+			cb->selectionMade(0, queryID);
+		return;
+	}
+
 	if(autoHeroController && autoHeroController->isRunning() && autoHero
 		&& dst == autoHero && autoHeroController->allowsAction(AutoHeroes::Action::RECRUIT_CREATURES)
 		&& autoHeroController->recruitmentLocation() != AutoHeroes::RecruitmentLocation::TOWN_ONLY)
