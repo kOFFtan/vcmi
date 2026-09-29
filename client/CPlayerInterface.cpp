@@ -1276,6 +1276,24 @@ void CPlayerInterface::showBlockingDialog(const std::string &text, const std::ve
 	}
 
 	if(autoHeroController && autoHeroController->isRunning()
+		&& !selection && cancel)
+	{
+		const auto * activeHero = autoHeroController->currentHero();
+		if(activeHero)
+		{
+			for(const auto * object : cb->getVisitableObjs(activeHero->visitablePos()))
+			{
+				if(object && object->ID == Obj::WAR_MACHINE_FACTORY)
+				{
+					logGlobal->info("AHDBG DIALOG_REPLY kind=war_machine_factory source=auto option=0 reason=service_object_not_capture_target");
+					cb->selectionMade(0, askID);
+					return;
+				}
+			}
+		}
+	}
+
+	if(autoHeroController && autoHeroController->isRunning()
 		&& autoHeroController->isTreasureChestInteraction()
 		&& selection && components.size() == 2)
 	{
