@@ -50,6 +50,7 @@ class AutoHeroController
 	int pendingQueryReplies = 0;
 	int querySettleTicks = 0;
 	int encounterGraceTicks = 0;
+	int experienceGraceTicks = 0;
 	int battleCleanupTicks = 0;
 	std::optional<int3> battleCleanupTarget;
 	bool waitingForTownUpgrade = false;
@@ -169,7 +170,8 @@ public:
 	void onDialogResolved();
 	void onQueryOpened();
 	void onQueryReplyApplied();
-	bool shouldAutoAcceptDwellingRecruit() const;
+	void onHeroExperienceChanged(const CGHeroInstance * hero);
+	std::optional<int> autoDwellingRecruitReply() const;
 	std::optional<int> autoCreatureEncounterReply() const;
 	bool shouldAutoAcceptBorderGuard() const;
 	bool handleTransportHeroExchange(ObjectInstanceID hero1, ObjectInstanceID hero2, QueryID query);
