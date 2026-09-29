@@ -2099,6 +2099,7 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		int turns = -1;
 		float cost = -1.0f;
 		int tileDistance = std::numeric_limits<int>::max();
+		int localValueRank = 1;
 	};
 
 	auto fillMetrics = [&](ActionCandidate & candidate)
@@ -2228,12 +2229,23 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		}
 
 		fillMetrics(candidate);
+		if(candidate.action == AutoHeroes::Action::LEVEL_UP && candidate.destination)
+		{
+			for(const auto * object : owner.cb->getVisitableObjs(*candidate.destination))
+			{
+				if(isPermanentPrimaryStatTarget(object) && !object->wasVisited(hero))
+				{
+					candidate.localValueRank = 0;
+					break;
+				}
+			}
+		}
 		const bool isLocal = candidate.destination && candidate.tileDistance <= LOCAL_OPPORTUNITY_RADIUS;
-		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s priorityRank=%d result=%s target=%s turns=%d cost=%.1f tileDistance=%d local=%d spellbook=%d roleMismatch=%d",
+		logGlobal->info("AHDBG ACTION_EVAL hero=%s action=%s priorityRank=%d result=%s target=%s turns=%d cost=%.1f tileDistance=%d local=%d localValueRank=%d spellbook=%d roleMismatch=%d",
 			hero->getNameTextID(), actionName(action), candidate.priorityRank,
 			candidate.destination ? "TARGET" : "NONE", candidate.destination ? candidate.destination->toString() : "<none>",
 			candidate.turns, candidate.cost, candidate.destination ? candidate.tileDistance : -1, isLocal ? 1 : 0,
-			candidate.spellbook ? 1 : 0, roleMismatch ? 1 : 0);
+			candidate.localValueRank, candidate.spellbook ? 1 : 0, roleMismatch ? 1 : 0);
 
 		if(!candidate.destination)
 			continue;
@@ -2242,6 +2254,9 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 		{
 			auto localScoreBetter = [](const ActionCandidate & lhs, const ActionCandidate & rhs)
 			{
+				if(lhs.localValueRank != rhs.localValueRank)
+					return lhs.localValueRank < rhs.localValueRank;
+
 				const int lhsTurns = lhs.turns >= 0 ? lhs.turns : std::numeric_limits<int>::max();
 				const int rhsTurns = rhs.turns >= 0 ? rhs.turns : std::numeric_limits<int>::max();
 				if(lhsTurns != rhsTurns)
@@ -2278,10 +2293,10 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	if(bestLocalCandidate)
 	{
 		selected = bestLocalCandidate;
-		logGlobal->info("AHDBG LOCAL_SWEEP hero=%s action=%s target=%s turns=%d cost=%.1f tileDistance=%d priorityRank=%d role=%s reason=nearest_local_useful",
+		logGlobal->info("AHDBG LOCAL_SWEEP hero=%s action=%s target=%s turns=%d cost=%.1f tileDistance=%d priorityRank=%d localValueRank=%d role=%s reason=nearest_local_useful",
 			hero->getNameTextID(), actionName(selected->action),
 			selected->destination ? selected->destination->toString() : "<none>",
-			selected->turns, selected->cost, selected->tileDistance, selected->priorityRank,
+			selected->turns, selected->cost, selected->tileDistance, selected->priorityRank, selected->localValueRank,
 			combatRole ? "combat" : "utility");
 	}
 	else
