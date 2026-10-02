@@ -1694,6 +1694,7 @@ std::optional<int3> AutoHeroController::findTeleportGatewayToward(const CGHeroIn
 		return std::nullopt;
 
 	const int3 mapSize = owner.cb->getMapSize();
+	const int currentStrategicDistance = strategicDistanceScore(hero->visitablePos(), strategicTarget);
 	std::optional<int3> bestGateway;
 	int bestExitDistance = std::numeric_limits<int>::max();
 	int bestTurns = std::numeric_limits<int>::max();
@@ -1741,8 +1742,17 @@ std::optional<int3> AutoHeroController::findTeleportGatewayToward(const CGHeroIn
 					if(exitCount == 0)
 						continue;
 
-					logGlobal->info("AHDBG TELEPORT_GATEWAY_CANDIDATE hero=%s entrance=%s target=%s exits=%d exitDistance=%d turns=%d cost=%.1f",
-						hero->getNameTextID(), gateway.toString(), strategicTarget.toString(), exitCount, exitDistance, node->turns, node->cost);
+					if(exitDistance >= currentStrategicDistance)
+					{
+						logGlobal->info("AHDBG TELEPORT_GATEWAY_REJECT hero=%s entrance=%s target=%s exits=%d currentDistance=%d exitDistance=%d reason=no_strategic_improvement",
+							hero->getNameTextID(), gateway.toString(), strategicTarget.toString(), exitCount,
+							currentStrategicDistance, exitDistance);
+						continue;
+					}
+
+					logGlobal->info("AHDBG TELEPORT_GATEWAY_CANDIDATE hero=%s entrance=%s target=%s exits=%d currentDistance=%d exitDistance=%d turns=%d cost=%.1f",
+						hero->getNameTextID(), gateway.toString(), strategicTarget.toString(), exitCount,
+						currentStrategicDistance, exitDistance, node->turns, node->cost);
 
 					if(exitDistance < bestExitDistance
 						|| (exitDistance == bestExitDistance && node->turns < bestTurns)
@@ -2076,6 +2086,21 @@ bool AutoHeroController::startNextAction(const CGHeroInstance * hero)
 	{
 		if(startTransporterAction(hero, config))
 			return true;
+
+		// Transport work is allowed to fall back to normal utility actions only
+		// when the courier is genuinely idle: no cargo and no pending source leg.
+		// With cargo (or while returning to a source), wandering to ordinary
+		// targets can send the hero back through the same portal and create a
+		// surface/underground ping-pong loop.
+		config = AutoHeroes::readHeroConfig(hero->id);
+		const bool hasCargo = transporterHasCargo(hero);
+		const bool transportBusy = hasCargo || config.transporterNeedsSource;
+		if(transportBusy)
+		{
+			logGlobal->info("AHDBG TRANSPORT_HOLD hero=%s cargo=%d needsSource=%d reason=no_safe_transport_route",
+				hero->getNameTextID(), hasCargo ? 1 : 0, config.transporterNeedsSource ? 1 : 0);
+			return false;
+		}
 
 		logGlobal->info("AHDBG TRANSPORT_IDLE_FALLBACK hero=%s fallback=normal_actions",
 			hero->getNameTextID());
